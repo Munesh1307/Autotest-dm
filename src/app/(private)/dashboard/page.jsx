@@ -110,7 +110,7 @@ function Page() {
     toast.info("Connecting your Instagram account with Meta...");
 
     try {
-      const redirectUri = "http://localhost:3000/dashboard";
+     const redirectUri = "https://auto-dm-beta.vercel.app/dashboard";
       const { data, error } = await supabase.functions.invoke("instagram-auth", {
         body: {
           code: code,
@@ -183,7 +183,7 @@ function Page() {
         return;
       }
 
-     const redirectUri = "http://localhost:3000/dashboard";
+    const redirectUri = "https://auto-dm-beta.vercel.app/dashboard";
       const { data, error } = await supabase.functions.invoke("instagram-auth", {
         body: {
           action: "get_auth_url",
