@@ -20,8 +20,11 @@ Deno.serve(async (req: Request) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-    const metaAppId = Deno.env.get("META_INSTAGRAM_APP_ID") || Deno.env.get("META_APP_ID") || "";
-    const metaAppSecret = Deno.env.get("META_APP_SECRET") || "";
+ const metaAppId = Deno.env.get("META_INSTAGRAM_APP_ID") || Deno.env.get("META_APP_ID") || "";
+const metaAppSecret = Deno.env.get("META_APP_SECRET") || "";
+const instagramRedirectUri =
+  Deno.env.get("INSTAGRAM_REDIRECT_URI") ||
+  "https://auto-dm-beta.vercel.app/dashboard";
 
     // 1. Authenticate user from the Authorization header JWT
     const authHeader = req.headers.get("Authorization");
@@ -101,8 +104,8 @@ Deno.serve(async (req: Request) => {
     }
 
     // Action: Exchange Authorization Code for Access Tokens
-    const rawCode = body.code || "";
-    const redirectUri = body.redirect_uri || "";
+  const rawCode = body.code || "";
+const redirectUri = instagramRedirectUri;
 
     if (!rawCode) {
       return new Response(
