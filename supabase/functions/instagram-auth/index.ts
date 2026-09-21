@@ -464,10 +464,41 @@ Deno.serve(async (req: Request) => {
           );
         }
 
+        const rawList = Array.isArray(commentsData.data) ? commentsData.data : [];
+        const normalizedList = rawList.map((c: any) => {
+          const resolvedUsername =
+            c.username ||
+            c.from?.username ||
+            c.user?.username ||
+            c.from?.name ||
+            c.name ||
+            "instagram_user";
+
+          const subReplies = c.replies?.data && Array.isArray(c.replies.data)
+            ? c.replies.data.map((r: any) => ({
+                id: String(r.id || ""),
+                text: String(r.text || ""),
+                timestamp: r.timestamp || null,
+                username: r.username || r.from?.username || r.user?.username || "instagram_user",
+              }))
+            : [];
+
+          return {
+            id: String(c.id || ""),
+            text: String(c.text || ""),
+            timestamp: c.timestamp || null,
+            username: resolvedUsername,
+            userId: c.from?.id || c.user?.id || c.user_id || null,
+            like_count: c.like_count ?? 0,
+            from: c.from || (c.username ? { username: c.username } : null),
+            replies: subReplies.length > 0 ? { data: subReplies } : (c.replies || null),
+          };
+        });
+
         return new Response(
           JSON.stringify({
             success: true,
-            data: commentsData.data || [],
+            data: normalizedList,
             paging: commentsData.paging || null,
           }),
           {

@@ -260,61 +260,81 @@ export const instagramService = {
   },
 
   /**
-   * Save or update automation rule
+   * Save or update automation rule for a post
    */
   async saveAutomation(supabase, { accountId, postId, keyword, dmMessage, isActive, automationId }) {
     const client = supabase || createClient();
 
-    // Use RPC if available or standard upsert
-    try {
-      const { data, error } = await client.rpc("save_instagram_automation", {
-        p_account_id: accountId,
-        p_post_id: String(postId),
-        p_keyword: keyword.trim(),
-        p_dm_message: dmMessage.trim(),
-        p_is_active: isActive,
-      });
-
-      if (!error && data) {
-        return { data, error: null };
-      }
-    } catch (_) {}
-
-    // Fallback to table update/insert
     const {
       data: { user },
     } = await client.auth.getUser();
 
+    if (!user) {
+      return { data: null, error: { message: "User not authenticated" } };
+    }
+
+    const cleanKeyword = (keyword || "").trim();
+    const cleanDmMessage = (dmMessage || "").trim();
+    const cleanPostId = String(postId || "").trim();
+
+    // 1. If automationId is provided, update by ID
     if (automationId) {
       const { data, error } = await client
         .from("instagram_automations")
         .update({
-          keyword: keyword.trim(),
-          dm_message: dmMessage.trim(),
-          is_active: isActive,
+          keyword: cleanKeyword,
+          dm_message: cleanDmMessage,
+          is_active: isActive !== false,
           updated_at: new Date().toISOString(),
         })
         .eq("id", automationId)
         .select()
         .single();
 
-      return { data, error };
-    } else {
+      if (!error && data) {
+        return { data, error: null };
+      }
+    }
+
+    // 2. Check if a rule already exists for this post
+    const { data: existing } = await client
+      .from("instagram_automations")
+      .select("id")
+      .eq("instagram_account_id", accountId)
+      .eq("instagram_post_id", cleanPostId)
+      .maybeSingle();
+
+    if (existing?.id) {
       const { data, error } = await client
         .from("instagram_automations")
-        .insert({
-          user_id: user?.id,
-          instagram_account_id: accountId,
-          instagram_post_id: String(postId),
-          keyword: keyword.trim(),
-          dm_message: dmMessage.trim(),
-          is_active: isActive,
+        .update({
+          keyword: cleanKeyword,
+          dm_message: cleanDmMessage,
+          is_active: isActive !== false,
+          updated_at: new Date().toISOString(),
         })
+        .eq("id", existing.id)
         .select()
         .single();
 
       return { data, error };
     }
+
+    // 3. Otherwise insert a new record
+    const { data, error } = await client
+      .from("instagram_automations")
+      .insert({
+        user_id: user.id,
+        instagram_account_id: accountId,
+        instagram_post_id: cleanPostId,
+        keyword: cleanKeyword,
+        dm_message: cleanDmMessage,
+        is_active: isActive !== false,
+      })
+      .select()
+      .single();
+
+    return { data, error };
   },
 
   /**
