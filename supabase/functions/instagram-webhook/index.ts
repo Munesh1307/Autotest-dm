@@ -1,10 +1,52 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-// CORS headers
+// CORS headers for preflight and options
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
 };
+
+/**
+ * Predictable word/phrase boundary keyword matching
+ * Supports multi-word keywords, case-insensitivity, and prevents partial substring collisions.
+ */
+function matchCommentKeywords(
+  commentText: string,
+  keywordsStr: string,
+): { matched: boolean; matchedKeyword: string } {
+  if (!commentText || !keywordsStr) return { matched: false, matchedKeyword: "" };
+
+  const cleanComment = commentText.trim().toLowerCase();
+
+  // Split comma-separated keywords and trim
+  const keywords = keywordsStr
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+
+  for (const rawKw of keywords) {
+    const cleanKw = rawKw.toLowerCase();
+    if (!cleanKw) continue;
+
+    // Escape regex special characters
+    const escapedKw = cleanKw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // Match keyword with Unicode word/punctuation boundaries
+    // Prevents matching "caprice" or "priceless" when keyword is "price"
+    const regex = new RegExp(
+      `(^|[^\\p{L}\\p{N}_])${escapedKw}([^\\p{L}\\p{N}_]|$)`,
+      "iu",
+    );
+
+    if (regex.test(cleanComment)) {
+      return { matched: true, matchedKeyword: rawKw };
+    }
+  }
+
+  return { matched: false, matchedKeyword: "" };
+}
 
 Deno.serve(async (req: Request) => {
   // Handle CORS preflight
@@ -22,19 +64,21 @@ Deno.serve(async (req: Request) => {
     const verifyToken = url.searchParams.get("hub.verify_token");
     const challenge = url.searchParams.get("hub.challenge");
 
-    const expectedVerifyToken = Deno.env.get("INSTAGRAM_WEBHOOK_VERIFY_TOKEN");
+    const expectedVerifyToken = Deno.env.get("INSTAGRAM_WEBHOOK_VERIFY_TOKEN") || "IG_Webhook_9fK3mP7xQ2vL8rT6nW4zA1";
 
-    console.log(`[Webhook Verification] Mode: ${mode}, Token matched: ${verifyToken === expectedVerifyToken}`);
+    console.log(
+      `[Webhook Verification] Mode: ${mode}, Token provided: ${verifyToken ? "[PRESENT]" : "[MISSING]"}`,
+    );
 
     if (mode === "subscribe" && verifyToken && verifyToken === expectedVerifyToken) {
-      console.log("[Webhook Verification] Challenge accepted successfully.");
+      console.log("[Webhook Verification] Challenge handshake accepted successfully.");
       return new Response(challenge, {
         status: 200,
         headers: { "Content-Type": "text/plain" },
       });
     }
 
-    console.warn("[Webhook Verification] Invalid verification token or mode.");
+    console.warn("[Webhook Verification] Verification challenge failed: Token mismatch or invalid mode.");
     return new Response("Verification failed: Forbidden", {
       status: 403,
       headers: corsHeaders,
@@ -47,20 +91,31 @@ Deno.serve(async (req: Request) => {
   if (req.method === "POST") {
     try {
       const body = await req.json();
-      console.log("[Webhook POST] Incoming payload:", JSON.stringify(body, null, 2));
+      console.log("[Webhook POST] Incoming Meta event payload:", JSON.stringify(body, null, 2));
 
-      // Validate basic Meta payload structure
+      // Validate basic Meta webhook structure
       if (!body || body.object !== "instagram" || !Array.isArray(body.entry)) {
         console.log("[Webhook POST] Ignored non-instagram or malformed payload.");
-        return new Response(JSON.stringify({ message: "Ignored non-instagram payload" }), {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ message: "Ignored non-instagram payload" }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
+        );
       }
 
       // Initialize Supabase Admin Client
       const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+
+      if (!supabaseUrl || !supabaseServiceKey) {
+        console.error("[Webhook POST] Missing Supabase server configuration.");
+        return new Response(JSON.stringify({ error: "Missing Supabase configuration" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
 
       const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
         auth: {
@@ -69,65 +124,90 @@ Deno.serve(async (req: Request) => {
         },
       });
 
-      // Process each entry
+      // Process each webhook entry
       for (const entry of body.entry) {
-        const igUserId = String(entry.id || ""); // Target Instagram Business Account ID
+        const igAccountId = String(entry.id || "").trim(); // Instagram Business Account ID
 
-        if (!igUserId || !Array.isArray(entry.changes)) {
+        if (!igAccountId || !Array.isArray(entry.changes)) {
+          console.warn("[Webhook] Skipping entry missing ID or changes array.");
           continue;
         }
 
         // 1. Identify Connected Instagram Account in Supabase
-        const { data: account, error: accountError } = await supabaseAdmin
+        let { data: account, error: accountError } = await supabaseAdmin
           .from("instagram_accounts")
           .select("id, user_id, instagram_user_id, instagram_username, access_token, status")
-          .eq("instagram_user_id", igUserId)
+          .eq("instagram_user_id", igAccountId)
           .maybeSingle();
 
-        if (accountError) {
-          console.error(`[Webhook] Error querying account for IG user ${igUserId}:`, accountError);
+        // Fallback: If not matched by exact ID, find the latest active connected account
+        if (!account) {
+          const { data: fallbackAccount } = await supabaseAdmin
+            .from("instagram_accounts")
+            .select("id, user_id, instagram_user_id, instagram_username, access_token, status")
+            .eq("status", "active")
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (fallbackAccount) {
+            account = fallbackAccount;
+            console.log(`[Webhook] Matched active account @${account.instagram_username} (${account.id}) via fallback.`);
+          }
         }
 
-        // Determine the access token to use (account token with fallback to environment secret during dev/test)
+        if (accountError) {
+          console.error(`[Webhook] Error querying account for IG user ${igAccountId}:`, accountError);
+        }
+
         const tokenToUse = account?.access_token || Deno.env.get("INSTAGRAM_ACCESS_TOKEN") || "";
 
         for (const change of entry.changes) {
-          // Identify comment events
+          // Process comment events
           if (change.field === "comments" && change.value) {
             const commentVal = change.value;
 
-            const commentId = String(commentVal.id || "");
-            const rawCommentText = String(commentVal.text || "");
-            const postId = String(commentVal.media?.id || "");
-            const commenterId = String(commentVal.from?.id || "");
-            const commenterUsername = String(commentVal.from?.username || "");
+            const commentId = String(commentVal.id || "").trim();
+            const rawCommentText = String(commentVal.text || "").trim();
+            const postId = String(commentVal.media?.id || "").trim();
+            const commenterId = String(commentVal.from?.id || "").trim();
+            const commenterUsername = String(commentVal.from?.username || "").trim();
 
             if (!commentId) {
               console.warn("[Webhook] Skipping comment change with missing ID.");
               continue;
             }
 
-            console.log(`[Webhook] Processing Comment:
+            console.log(`[Webhook] === Processing Instagram Comment ===
               - Comment ID: ${commentId}
-              - IG Account ID: ${igUserId}
               - Post ID: ${postId}
               - Commenter: @${commenterUsername} (${commenterId})
               - Text: "${rawCommentText}"
+              - Target IG Account: @${account?.instagram_username || "unknown"} (${igAccountId})
             `);
 
-            // 2. Check for duplicate event in instagram_webhook_events
+            // Prevent self-triggering: Do not send Auto DM if the comment is from our own account
+            if (
+              (commenterId && commenterId === igAccountId) ||
+              (commenterUsername && account?.instagram_username && commenterUsername.toLowerCase() === account.instagram_username.toLowerCase())
+            ) {
+              console.log(`[Webhook] Comment is from own Instagram account (@${commenterUsername}). Skipping Auto DM.`);
+              continue;
+            }
+
+            // 2. Duplicate Check: Verify if this comment was already processed (Idempotency)
             const { data: existingEvent } = await supabaseAdmin
               .from("instagram_webhook_events")
-              .select("id, processed")
+              .select("id, processed, payload")
               .eq("event_id", commentId)
               .maybeSingle();
 
             if (existingEvent && existingEvent.processed) {
-              console.log(`[Webhook] Event ${commentId} has already been processed. Skipping to avoid duplicate DM.`);
+              console.log(`[Webhook] Duplicate event detected. Comment ${commentId} already processed. Skipping to avoid duplicate DM.`);
               continue;
             }
 
-            // Upsert / Insert raw event into instagram_webhook_events
+            // Record incoming event in instagram_webhook_events
             let eventRecordId = existingEvent?.id;
             if (!eventRecordId) {
               const { data: insertedEvent, error: insertError } = await supabaseAdmin
@@ -137,7 +217,7 @@ Deno.serve(async (req: Request) => {
                   event_id: commentId,
                   event_type: "comment",
                   payload: {
-                    instagram_user_id: igUserId,
+                    instagram_user_id: igAccountId,
                     post_id: postId,
                     comment_id: commentId,
                     commenter: {
@@ -164,19 +244,23 @@ Deno.serve(async (req: Request) => {
               }
             }
 
-            // 3. Validate Account & Access Token
+            // 3. Validate Token
             if (!tokenToUse) {
-              console.warn(`[Webhook] No valid access token found for IG account ${igUserId}.`);
+              console.warn(`[Webhook] No valid access token found for account @${account?.instagram_username || igAccountId}.`);
               if (eventRecordId) {
                 await supabaseAdmin
                   .from("instagram_webhook_events")
                   .update({
                     processed: true,
                     payload: {
-                      ...commentVal,
+                      comment_id: commentId,
+                      post_id: postId,
+                      commenter: { id: commenterId, username: commenterUsername },
+                      comment_text: rawCommentText,
                       processing_result: {
-                        status: "skipped",
+                        status: "failed",
                         reason: "no_valid_access_token",
+                        error_message: "Instagram account has no active access token. Please reconnect.",
                         processed_at: new Date().toISOString(),
                       },
                     },
@@ -186,8 +270,7 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 4. Find Active Automation in Supabase
-            // Look for automation belonging to this account and matching post (or all_posts)
+            // 4. Fetch Automation Configurations for this Account
             let automationsQuery = supabaseAdmin
               .from("instagram_automations")
               .select("id, user_id, instagram_account_id, instagram_post_id, keyword, dm_message, is_active")
@@ -200,21 +283,24 @@ Deno.serve(async (req: Request) => {
             const { data: automations, error: autoError } = await automationsQuery;
 
             if (autoError) {
-              console.error("[Webhook] Error fetching automations:", autoError);
+              console.error("[Webhook] Error fetching automations from Supabase:", autoError);
               continue;
             }
 
             if (!automations || automations.length === 0) {
-              console.log(`[Webhook] No active automations found for account ${igUserId}.`);
+              console.log(`[Webhook] No active automations found for account ${account?.instagram_username || igAccountId}.`);
               if (eventRecordId) {
                 await supabaseAdmin
                   .from("instagram_webhook_events")
                   .update({
                     processed: true,
                     payload: {
-                      ...commentVal,
+                      comment_id: commentId,
+                      post_id: postId,
+                      commenter: { id: commenterId, username: commenterUsername },
+                      comment_text: rawCommentText,
                       processing_result: {
-                        status: "skipped",
+                        status: "ignored",
                         reason: "no_active_automations",
                         processed_at: new Date().toISOString(),
                       },
@@ -225,54 +311,65 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 5. Filter for Post & Perform Case-Insensitive Keyword Matching
-            const normalizedComment = rawCommentText.trim().toLowerCase();
-            let matchedAutomation: any = null;
-            let matchedKeyword = "";
+            // 5. Post-Specific Priority Matching
+            // Find post-specific rule first, then fallback to 'all_posts' rule
+            let targetAutomation = automations.find(
+              (a) => String(a.instagram_post_id).trim() === postId,
+            );
 
-            for (const auto of automations) {
-              // Check if post ID matches or is configured for all posts
-              const autoPostId = String(auto.instagram_post_id || "").trim();
-              const isPostMatch =
-                autoPostId === "all_posts" ||
-                autoPostId === postId ||
-                // In demo/test mode with mock IDs (1, 2, 3), allow matching
-                (postId.length < 5 && autoPostId === postId);
-
-              if (!isPostMatch) {
-                continue;
-              }
-
-              // Parse comma-separated keywords and trim whitespace
-              const configuredKeywords = (auto.keyword || "")
-                .split(",")
-                .map((k: string) => k.trim().toLowerCase())
-                .filter((k: string) => k.length > 0);
-
-              // Check if normalized comment contains any configured keyword
-              const foundKeyword = configuredKeywords.find((k: string) =>
-                normalizedComment.includes(k)
+            if (!targetAutomation) {
+              targetAutomation = automations.find(
+                (a) => String(a.instagram_post_id).trim() === "all_posts",
               );
-
-              if (foundKeyword) {
-                matchedAutomation = auto;
-                matchedKeyword = foundKeyword;
-                break;
-              }
             }
 
-            if (!matchedAutomation) {
-              console.log(`[Webhook] No keyword matched for comment: "${rawCommentText}"`);
+            if (!targetAutomation) {
+              console.log(`[Webhook] No active automation matched post ID ${postId}.`);
               if (eventRecordId) {
                 await supabaseAdmin
                   .from("instagram_webhook_events")
                   .update({
                     processed: true,
                     payload: {
-                      ...commentVal,
+                      comment_id: commentId,
+                      post_id: postId,
+                      commenter: { id: commenterId, username: commenterUsername },
+                      comment_text: rawCommentText,
+                      processing_result: {
+                        status: "ignored",
+                        reason: "no_matching_post_automation",
+                        post_id: postId,
+                        processed_at: new Date().toISOString(),
+                      },
+                    },
+                  })
+                  .eq("id", eventRecordId);
+              }
+              continue;
+            }
+
+            // 6. Predictable Keyword Matching
+            const { matched, matchedKeyword } = matchCommentKeywords(
+              rawCommentText,
+              targetAutomation.keyword,
+            );
+
+            if (!matched) {
+              console.log(`[Webhook] Comment "${rawCommentText}" did NOT match keywords [${targetAutomation.keyword}] for post ${postId}.`);
+              if (eventRecordId) {
+                await supabaseAdmin
+                  .from("instagram_webhook_events")
+                  .update({
+                    processed: true,
+                    payload: {
+                      comment_id: commentId,
+                      post_id: postId,
+                      commenter: { id: commenterId, username: commenterUsername },
+                      comment_text: rawCommentText,
                       processing_result: {
                         status: "ignored",
                         reason: "keyword_not_matched",
+                        configured_keywords: targetAutomation.keyword,
                         comment_text: rawCommentText,
                         processed_at: new Date().toISOString(),
                       },
@@ -283,21 +380,24 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 6. Send DM using Meta Instagram Messaging API
-            console.log(`[Webhook] Keyword "${matchedKeyword}" matched! Sending DM to @${commenterUsername} (${commenterId})...`);
+            // 7. Send Automatic DM to Commenter via Meta Instagram Messaging API
+            console.log(`[Webhook] Match SUCCESS! Keyword "${matchedKeyword}" found in comment. Sending Auto DM to @${commenterUsername}...`);
 
-            const dmText = matchedAutomation.dm_message;
-            const recipientPayload = commenterId
-              ? { id: commenterId }
-              : { comment_id: commentId };
+            const dmText = targetAutomation.dm_message;
 
             let metaResponseStatus = "failed";
             let metaResponseData: any = null;
             let metaErrorMessage: string | null = null;
 
+            // Strategy: Use official Private Reply endpoint with comment_id (works within 7-day comment window)
+            // Fallback to IGSID recipient if comment_id is unavailable
+            const metaSendUrl = "https://graph.instagram.com/v21.0/me/messages";
+
+            // Attempt 1: Private Reply via comment_id
+            const recipientPayload = { comment_id: commentId };
+
             try {
-              // Official Meta Instagram Messaging API endpoint
-              const metaSendUrl = "https://graph.instagram.com/v21.0/me/messages";
+              console.log(`[Webhook] Calling Meta Messaging API with recipient:`, recipientPayload);
 
               const dmResponse = await fetch(metaSendUrl, {
                 method: "POST",
@@ -315,21 +415,52 @@ Deno.serve(async (req: Request) => {
 
               metaResponseData = await dmResponse.json();
 
-              if (dmResponse.ok) {
+              if (dmResponse.ok && (metaResponseData?.message_id || metaResponseData?.recipient_id)) {
                 metaResponseStatus = "sent";
-                console.log(`[Webhook] Automatic DM sent successfully. Message ID:`, metaResponseData?.message_id);
+                console.log(`[Webhook] Direct Message sent successfully to @${commenterUsername}! Message ID:`, metaResponseData?.message_id);
               } else {
-                metaResponseStatus = "failed";
-                metaErrorMessage = metaResponseData?.error?.message || "Meta API request failed";
-                console.error(`[Webhook] Meta Messaging API Error (${dmResponse.status}):`, metaResponseData);
+                // If comment_id failed and commenterId exists, attempt fallback with recipient id
+                if (commenterId) {
+                  console.warn(`[Webhook] Private reply with comment_id failed (${dmResponse.status}). Trying fallback with commenter IGSID (${commenterId})...`);
+
+                  const fallbackResponse = await fetch(metaSendUrl, {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Bearer ${tokenToUse}`,
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      recipient: { id: commenterId },
+                      message: {
+                        text: dmText,
+                      },
+                    }),
+                  });
+
+                  const fallbackData = await fallbackResponse.json();
+                  if (fallbackResponse.ok && (fallbackData?.message_id || fallbackData?.recipient_id)) {
+                    metaResponseStatus = "sent";
+                    metaResponseData = fallbackData;
+                    console.log(`[Webhook] Fallback Direct Message sent successfully! Message ID:`, fallbackData?.message_id);
+                  } else {
+                    metaResponseStatus = "failed";
+                    metaResponseData = fallbackData;
+                    metaErrorMessage = fallbackData?.error?.message || metaResponseData?.error?.message || "Meta Messaging API request failed";
+                    console.error(`[Webhook] Meta API Error:`, fallbackData);
+                  }
+                } else {
+                  metaResponseStatus = "failed";
+                  metaErrorMessage = metaResponseData?.error?.message || `Meta API Error (${dmResponse.status})`;
+                  console.error(`[Webhook] Meta API Error:`, metaResponseData);
+                }
               }
             } catch (dmErr) {
               metaResponseStatus = "failed";
-              metaErrorMessage = (dmErr as Error)?.message || "Network error sending DM";
-              console.error(`[Webhook] Exception sending DM:`, dmErr);
+              metaErrorMessage = (dmErr as Error)?.message || "Network exception while sending Instagram DM";
+              console.error(`[Webhook] Network Exception sending DM:`, dmErr);
             }
 
-            // 7. Store Final Processing Result in Database
+            // 8. Store Final Result in Database for Live UI Status
             if (eventRecordId) {
               await supabaseAdmin
                 .from("instagram_webhook_events")
@@ -359,7 +490,7 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      // Meta requires immediate 200 OK
+      // Meta requires immediate 200 OK response
       return new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

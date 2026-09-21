@@ -421,7 +421,7 @@ Deno.serve(async (req: Request) => {
       const commentsUrl =
         `https://graph.instagram.com/v21.0/${encodeURIComponent(
           String(postId),
-        )}/comments?fields=id,text,timestamp,username,like_count,replies{id,text,timestamp,username}&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+        )}/comments?fields=id,text,timestamp,username,like_count,from,replies{id,text,timestamp,username,from}&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
           igAccount.access_token,
         )}`;
 
