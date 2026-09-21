@@ -101,7 +101,7 @@ function Page() {
   const handleOAuthCallback = async () => {
     if (typeof window === "undefined") return;
 
-    // Check one-time guard synchronously before any async work
+    // Check one-time ref guard synchronously before any async work
     if (oauthProcessedRef.current) return;
 
     const urlParams = new URLSearchParams(window.location.search);
@@ -115,7 +115,20 @@ function Page() {
     window.history.replaceState({}, document.title, window.location.pathname);
 
     // Strip trailing #_ fragment if present
-    const cleanCode = code.replace(/#_$/, "");
+    const cleanCode = code.replace(/#_$/, "").trim();
+
+    // Prevent duplicate token exchange in React StrictMode across remounts
+    const sessionLockKey = `ig_code_lock_${cleanCode.substring(0, 16)}`;
+    if (sessionStorage.getItem(sessionLockKey)) {
+      console.log("[dashboard] OAuth code already submitted, skipping duplicate call.");
+      return;
+    }
+    sessionStorage.setItem(sessionLockKey, "processing");
+
+    // Use exact redirect_uri stored at initiation or current dashboard URL
+    const redirectUri =
+      sessionStorage.getItem("instagram_oauth_redirect_uri") ||
+      (window.location.origin + window.location.pathname);
 
     try {
       const msgUint8 = new TextEncoder().encode(cleanCode);
@@ -128,6 +141,8 @@ function Page() {
       console.log(
         "[dashboard] OAuth callback captured code fingerprint:",
         codeFingerprint,
+        "redirect_uri:",
+        redirectUri,
       );
     } catch (_) {}
 
@@ -140,6 +155,7 @@ function Page() {
         {
           body: {
             code: cleanCode,
+            redirect_uri: redirectUri,
           },
         },
       );
@@ -215,11 +231,15 @@ function Page() {
         return;
       }
 
+      const redirectUri = window.location.origin + window.location.pathname;
+      sessionStorage.setItem("instagram_oauth_redirect_uri", redirectUri);
+
       const { data, error } = await supabase.functions.invoke(
         "instagram-auth",
         {
           body: {
             action: "get_auth_url",
+            redirect_uri: redirectUri,
           },
         },
       );

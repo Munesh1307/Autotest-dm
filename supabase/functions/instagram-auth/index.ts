@@ -2,7 +2,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "https://auto-dm-beta.vercel.app",
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
@@ -36,18 +36,32 @@ Deno.serve(async (req: Request) => {
     const metaAppSecret =
       Deno.env.get("META_INSTAGRAM_APP_SECRET") ?? "";
 
-    /*
-     * IMPORTANT:
-     * Do NOT use a fallback redirect URI here.
-     *
-     * This value must be EXACTLY the same as the redirect_uri
-     * used in the Instagram OAuth authorization request.
-     */
-    const instagramRedirectUri =
+    const envRedirectUri =
       Deno.env.get("INSTAGRAM_REDIRECT_URI") ?? "";
 
     // --------------------------------------------------
-    // 2. Validate server configuration
+    // 2. Parse request body
+    // --------------------------------------------------
+
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      body = {};
+    }
+
+    /*
+     * Resolve redirect_uri:
+     * 1. Priority to body.redirect_uri passed by caller
+     * 2. Fallback to INSTAGRAM_REDIRECT_URI in Supabase Secrets
+     */
+    const resolvedRedirectUri =
+      (typeof body.redirect_uri === "string" && body.redirect_uri.trim())
+        ? body.redirect_uri.trim()
+        : envRedirectUri.trim();
+
+    // --------------------------------------------------
+    // 3. Validate server configuration
     // --------------------------------------------------
 
     if (!supabaseUrl || !supabaseServiceKey) {
@@ -55,7 +69,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({
           success: false,
           error:
-            "Missing Supabase server configuration.",
+            "Missing Supabase server configuration (SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY).",
         }),
         {
           status: 500,
@@ -101,12 +115,12 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    if (!instagramRedirectUri) {
+    if (!resolvedRedirectUri) {
       return new Response(
         JSON.stringify({
           success: false,
           error:
-            "Missing INSTAGRAM_REDIRECT_URI in Supabase Secrets.",
+            "Missing redirect_uri. Please provide redirect_uri in request or set INSTAGRAM_REDIRECT_URI in Supabase Secrets.",
         }),
         {
           status: 500,
@@ -199,28 +213,10 @@ Deno.serve(async (req: Request) => {
     }
 
     // --------------------------------------------------
-    // 4. Parse request body
-    // --------------------------------------------------
-
-    let body: any = {};
-
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
-
-    // --------------------------------------------------
-    // 5. Generate Instagram OAuth URL
+    // 4. Generate Instagram OAuth URL
     // --------------------------------------------------
 
     if (body.action === "get_auth_url") {
-      /*
-       * IMPORTANT:
-       * This redirect URI must be the SAME value used later
-       * during authorization-code exchange.
-       */
-
       const scopes = [
         "instagram_business_basic",
         "instagram_business_manage_messages",
@@ -231,7 +227,7 @@ Deno.serve(async (req: Request) => {
         "https://www.instagram.com/oauth/authorize" +
         `?client_id=${encodeURIComponent(metaAppId)}` +
         `&redirect_uri=${encodeURIComponent(
-          instagramRedirectUri,
+          resolvedRedirectUri,
         )}` +
         `&response_type=code` +
         `&scope=${encodeURIComponent(scopes.join(","))}`;
@@ -242,7 +238,7 @@ Deno.serve(async (req: Request) => {
           authorization_endpoint:
             "https://www.instagram.com/oauth/authorize",
           client_id: metaAppId,
-          redirect_uri: instagramRedirectUri,
+          redirect_uri: resolvedRedirectUri,
           response_type: "code",
           scopes,
         },
@@ -252,6 +248,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({
           success: true,
           auth_url: authUrl,
+          redirect_uri: resolvedRedirectUri,
         }),
         {
           status: 200,
@@ -264,7 +261,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // --------------------------------------------------
-    // 6. Read authorization code
+    // 5. Read authorization code
     // --------------------------------------------------
 
     const rawCode =
@@ -296,7 +293,7 @@ Deno.serve(async (req: Request) => {
     const cleanCode = rawCode.replace(/#_$/, "");
 
     // --------------------------------------------------
-    // 7. Create safe code fingerprint for logs
+    // 6. Create safe code fingerprint for logs
     // --------------------------------------------------
 
     const hashBuffer = await crypto.subtle.digest(
@@ -323,7 +320,7 @@ Deno.serve(async (req: Request) => {
         authorization_code_fingerprint:
           codeFingerprint,
         client_id: metaAppId,
-        redirect_uri: instagramRedirectUri,
+        redirect_uri: resolvedRedirectUri,
         grant_type: "authorization_code",
         has_client_secret: Boolean(metaAppSecret),
         has_code: Boolean(cleanCode),
@@ -331,7 +328,7 @@ Deno.serve(async (req: Request) => {
     );
 
     // --------------------------------------------------
-    // 8. Exchange authorization code for short-lived token
+    // 7. Exchange authorization code for short-lived token
     // --------------------------------------------------
 
     const tokenForm = new URLSearchParams();
@@ -355,11 +352,11 @@ Deno.serve(async (req: Request) => {
      * VERY IMPORTANT:
      *
      * This MUST exactly match the redirect_uri
-     * used in Step 5.
+     * used in Step 4.
      */
     tokenForm.append(
       "redirect_uri",
-      instagramRedirectUri,
+      resolvedRedirectUri,
     );
 
     tokenForm.append(
@@ -372,7 +369,7 @@ Deno.serve(async (req: Request) => {
       {
         client_id: metaAppId,
         grant_type: "authorization_code",
-        redirect_uri: instagramRedirectUri,
+        redirect_uri: resolvedRedirectUri,
         has_code: Boolean(cleanCode),
         has_client_secret: Boolean(metaAppSecret),
       },
@@ -423,7 +420,7 @@ Deno.serve(async (req: Request) => {
             shortLivedData?.code ??
             "unknown",
           redirect_uri_used:
-            instagramRedirectUri,
+            resolvedRedirectUri,
           client_id_used: metaAppId,
         },
       );
