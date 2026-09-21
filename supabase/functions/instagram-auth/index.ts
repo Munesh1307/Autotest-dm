@@ -483,6 +483,12 @@ Deno.serve(async (req: Request) => {
         )}/comments?limit=${limit}${afterParam}&access_token=${encodeURIComponent(
           igAccount.access_token,
         )}`,
+        // Attempt 7: Media node with comments field fallback
+        `https://graph.instagram.com/v21.0/${encodeURIComponent(
+          String(postId),
+        )}?fields=id,comments{id,text,timestamp,username,like_count}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`,
       ];
 
       let commentsData: any = null;
@@ -495,6 +501,9 @@ Deno.serve(async (req: Request) => {
 
           if (res.ok && Array.isArray(json.data)) {
             commentsData = json;
+            break;
+          } else if (res.ok && json.comments && Array.isArray(json.comments.data)) {
+            commentsData = json.comments;
             break;
           } else if (json?.error?.code === 190) {
             // Token expired
