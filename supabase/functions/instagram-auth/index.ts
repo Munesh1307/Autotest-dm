@@ -214,6 +214,7 @@ Deno.serve(async (req: Request) => {
       redirect_uri: INSTAGRAM_REDIRECT_URI,
       grant_type: "authorization_code",
       has_client_secret: Boolean(metaAppSecret),
+      client_secret_length: metaAppSecret.length,
       has_code: Boolean(cleanCode),
     });
 
@@ -231,6 +232,11 @@ Deno.serve(async (req: Request) => {
       INSTAGRAM_REDIRECT_URI,
     );
     tokenForm.append("code", cleanCode);
+
+    // Log exact fields being sent (no values for secret/code)
+    console.log("[instagram-auth] Token form fields being sent:", [
+      ...tokenForm.keys(),
+    ]);
 
     const shortLivedRes = await fetch(
       "https://api.instagram.com/oauth/access_token",
@@ -262,8 +268,12 @@ Deno.serve(async (req: Request) => {
           authorization_code_fingerprint: codeFingerprint,
           http_status: shortLivedRes.status,
           response: shortLivedData,
+          fbtrace_id: shortLivedData?.fbtrace_id || "not_present",
+          error_type: shortLivedData?.error_type || "unknown",
+          error_code: shortLivedData?.code || "unknown",
           redirect_uri_used: INSTAGRAM_REDIRECT_URI,
           client_id_used: metaAppId,
+          client_secret_length: metaAppSecret.length,
         },
       );
 
