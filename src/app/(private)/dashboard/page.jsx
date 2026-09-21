@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { toast } from "react-toastify";
 
 function Page() {
   const supabase = createClient();
+  const oauthProcessedRef = useRef(false);
 
   const [connected, setConnected] = useState(false);
   const [accountData, setAccountData] = useState(null);
@@ -99,21 +100,31 @@ function Page() {
 
   const handleOAuthCallback = async () => {
     if (typeof window === "undefined") return;
+
+    // Check one-time guard synchronously before any async work
+    if (oauthProcessedRef.current) return;
+
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get("code");
     if (!code) return;
 
-    // Clean URL query string
+    // Lock synchronously before starting token exchange
+    oauthProcessedRef.current = true;
+
+    // Clean OAuth code from browser URL immediately
     window.history.replaceState({}, document.title, window.location.pathname);
+
+    // Strip trailing #_ fragment if present
+    const cleanCode = code.replace(/#_$/, "");
 
     setConnecting(true);
     toast.info("Connecting your Instagram account with Meta...");
 
     try {
-     const redirectUri = "https://auto-dm-beta.vercel.app/dashboard";
+      const redirectUri = "https://auto-dm-beta.vercel.app/dashboard";
       const { data, error } = await supabase.functions.invoke("instagram-auth", {
         body: {
-          code: code,
+          code: cleanCode,
           redirect_uri: redirectUri,
         },
       });
