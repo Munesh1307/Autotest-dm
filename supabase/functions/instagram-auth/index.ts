@@ -261,7 +261,504 @@ Deno.serve(async (req: Request) => {
     }
 
     // --------------------------------------------------
-    // 5. Read authorization code
+    // 5. Fetch Connected Instagram Account Media (Posts)
+    // --------------------------------------------------
+
+    if (body.action === "get_media") {
+      const { data: igAccount, error: igAccError } = await supabaseAdmin
+        .from("instagram_accounts")
+        .select("id, instagram_user_id, instagram_username, access_token, status")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (igAccError || !igAccount || !igAccount.access_token) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "No connected Instagram account found. Please connect your Instagram account first.",
+            not_connected: true,
+          }),
+          {
+            status: 404,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const limit = Number(body.limit) || 24;
+      const afterParam = body.after ? `&after=${encodeURIComponent(String(body.after))}` : "";
+      const mediaUrl =
+        `https://graph.instagram.com/v21.0/me/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`;
+
+      try {
+        const mediaRes = await fetch(mediaUrl, { method: "GET" });
+        const mediaData = await mediaRes.json();
+
+        if (!mediaRes.ok || mediaData.error) {
+          console.error("[instagram-auth] Failed to fetch media:", mediaData);
+
+          // Handle expired token
+          if (mediaData?.error?.code === 190) {
+            await supabaseAdmin
+              .from("instagram_accounts")
+              .update({ status: "expired" })
+              .eq("id", igAccount.id);
+
+            return new Response(
+              JSON.stringify({
+                success: false,
+                error: "Instagram session expired. Please reconnect your account.",
+                expired: true,
+              }),
+              {
+                status: 401,
+                headers: {
+                  ...corsHeaders,
+                  "Content-Type": "application/json",
+                },
+              },
+            );
+          }
+
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: mediaData?.error?.message || "Failed to fetch Instagram posts from Meta API.",
+            }),
+            {
+              status: 400,
+              headers: {
+                ...corsHeaders,
+                "Content-Type": "application/json",
+              },
+            },
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: mediaData.data || [],
+            paging: mediaData.paging || null,
+          }),
+          {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      } catch (err) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: (err as Error)?.message || "Error fetching Instagram posts.",
+          }),
+          {
+            status: 500,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+    }
+
+    // --------------------------------------------------
+    // 6. Fetch Post Comments
+    // --------------------------------------------------
+
+    if (body.action === "get_comments") {
+      const postId = body.post_id;
+      if (!postId) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "Missing post_id parameter.",
+          }),
+          {
+            status: 400,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const { data: igAccount, error: igAccError } = await supabaseAdmin
+        .from("instagram_accounts")
+        .select("id, instagram_user_id, access_token")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (igAccError || !igAccount || !igAccount.access_token) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "No connected Instagram account found.",
+            not_connected: true,
+          }),
+          {
+            status: 404,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const limit = Number(body.limit) || 50;
+      const afterParam = body.after ? `&after=${encodeURIComponent(String(body.after))}` : "";
+      const commentsUrl =
+        `https://graph.instagram.com/v21.0/${encodeURIComponent(
+          String(postId),
+        )}/comments?fields=id,text,timestamp,username,like_count,replies{id,text,timestamp,username}&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`;
+
+      try {
+        const commentsRes = await fetch(commentsUrl, { method: "GET" });
+        const commentsData = await commentsRes.json();
+
+        if (!commentsRes.ok || commentsData.error) {
+          console.error("[instagram-auth] Failed to fetch comments:", commentsData);
+
+          if (commentsData?.error?.code === 190) {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                error: "Instagram session expired. Please reconnect your account.",
+                expired: true,
+              }),
+              {
+                status: 401,
+                headers: {
+                  ...corsHeaders,
+                  "Content-Type": "application/json",
+                },
+              },
+            );
+          }
+
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: commentsData?.error?.message || "Failed to fetch comments for this post.",
+            }),
+            {
+              status: 400,
+              headers: {
+                ...corsHeaders,
+                "Content-Type": "application/json",
+              },
+            },
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: commentsData.data || [],
+            paging: commentsData.paging || null,
+          }),
+          {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      } catch (err) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: (err as Error)?.message || "Error fetching comments.",
+          }),
+          {
+            status: 500,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+    }
+
+    // --------------------------------------------------
+    // 7. Reply to a Comment
+    // --------------------------------------------------
+
+    if (body.action === "reply_comment") {
+      const commentId = body.comment_id;
+      const message = String(body.message || "").trim();
+
+      if (!commentId || !message) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "Missing comment_id or message.",
+          }),
+          {
+            status: 400,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const { data: igAccount } = await supabaseAdmin
+        .from("instagram_accounts")
+        .select("id, access_token")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (!igAccount || !igAccount.access_token) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "No connected Instagram account found.",
+          }),
+          {
+            status: 404,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const replyUrl = `https://graph.instagram.com/v21.0/${encodeURIComponent(String(commentId))}/replies`;
+      const replyRes = await fetch(replyUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          message,
+          access_token: igAccount.access_token,
+        }).toString(),
+      });
+
+      const replyData = await replyRes.json();
+
+      if (!replyRes.ok || replyData.error) {
+        console.error("[instagram-auth] Reply failed:", replyData);
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: replyData?.error?.message || "Failed to post reply on Instagram.",
+          }),
+          {
+            status: 400,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          id: replyData.id,
+          message: "Reply posted successfully.",
+        }),
+        {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+    }
+
+    // --------------------------------------------------
+    // 8. Delete a Comment
+    // --------------------------------------------------
+
+    if (body.action === "delete_comment") {
+      const commentId = body.comment_id;
+      if (!commentId) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "Missing comment_id.",
+          }),
+          {
+            status: 400,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const { data: igAccount } = await supabaseAdmin
+        .from("instagram_accounts")
+        .select("id, access_token")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (!igAccount || !igAccount.access_token) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "No connected Instagram account found.",
+          }),
+          {
+            status: 404,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const delUrl = `https://graph.instagram.com/v21.0/${encodeURIComponent(
+        String(commentId),
+      )}?access_token=${encodeURIComponent(igAccount.access_token)}`;
+
+      const delRes = await fetch(delUrl, { method: "DELETE" });
+      const delData = await delRes.json();
+
+      if (!delRes.ok || delData.error) {
+        console.error("[instagram-auth] Delete comment failed:", delData);
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: delData?.error?.message || "Failed to delete comment on Instagram.",
+          }),
+          {
+            status: 400,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: "Comment deleted successfully.",
+        }),
+        {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+    }
+
+    // --------------------------------------------------
+    // 9. Hide / Unhide a Comment
+    // --------------------------------------------------
+
+    if (body.action === "hide_comment") {
+      const commentId = body.comment_id;
+      const hide = body.hide !== false;
+
+      if (!commentId) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "Missing comment_id.",
+          }),
+          {
+            status: 400,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const { data: igAccount } = await supabaseAdmin
+        .from("instagram_accounts")
+        .select("id, access_token")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (!igAccount || !igAccount.access_token) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "No connected Instagram account found.",
+          }),
+          {
+            status: 404,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      const hideUrl = `https://graph.instagram.com/v21.0/${encodeURIComponent(
+        String(commentId),
+      )}?hide=${hide}&access_token=${encodeURIComponent(igAccount.access_token)}`;
+
+      const hideRes = await fetch(hideUrl, { method: "POST" });
+      const hideData = await hideRes.json();
+
+      if (!hideRes.ok || hideData.error) {
+        console.error("[instagram-auth] Hide comment failed:", hideData);
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: hideData?.error?.message || "Failed to update comment visibility.",
+          }),
+          {
+            status: 400,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          hidden: hide,
+          message: hide ? "Comment hidden successfully." : "Comment unhidden successfully.",
+        }),
+        {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+    }
+
+    // --------------------------------------------------
+    // 10. Read authorization code (OAuth Token Exchange)
     // --------------------------------------------------
 
     const rawCode =
@@ -274,7 +771,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({
           success: false,
           error:
-            "Missing authorization code.",
+            "Missing authorization code or action.",
         }),
         {
           status: 400,

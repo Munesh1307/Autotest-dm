@@ -2,122 +2,94 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
+import { instagramService } from "@/services/instagram.service";
 import { toast } from "react-toastify";
 
 function Page() {
   const supabase = createClient();
   const oauthProcessedRef = useRef(false);
 
+  // Account State
   const [connected, setConnected] = useState(false);
   const [accountData, setAccountData] = useState(null);
-  const [enabled, setEnabled] = useState(true);
+  const [connecting, setConnecting] = useState(false);
+
+  // Real Instagram Posts State
+  const [posts, setPosts] = useState([]);
   const [selectedPost, setSelectedPost] = useState(0);
+  const [loadingPosts, setLoadingPosts] = useState(false);
+  const [postsError, setPostsError] = useState(null);
+  const [postsPaging, setPostsPaging] = useState(null);
+  const [loadingMorePosts, setLoadingMorePosts] = useState(false);
+
+  // Real Instagram Comments State
+  const [comments, setComments] = useState([]);
   const [selectedComment, setSelectedComment] = useState(0);
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [commentsError, setCommentsError] = useState(null);
+
+  // Comment Management Actions
+  const [replyingCommentId, setReplyingCommentId] = useState(null);
+  const [replyText, setReplyText] = useState("");
+  const [submittingReply, setSubmittingReply] = useState(false);
+  const [actionLoadingId, setActionLoadingId] = useState(null);
+
+  // Automation Configuration State
+  const [enabled, setEnabled] = useState(true);
   const [keyword, setKeyword] = useState("price, buy, info");
   const [dmMessage, setDmMessage] = useState(
-    "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details.",
+    "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details."
   );
-  const [loading, setLoading] = useState(false);
-  const [connecting, setConnecting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [currentAutomationId, setCurrentAutomationId] = useState(null);
   const [recentEvents, setRecentEvents] = useState([]);
 
-  const posts = [
-    {
-      id: 1,
-      type: "image",
-      image:
-        "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=900",
-      caption: "Our latest product is here 🚀",
-      comments: 12,
-    },
-    {
-      id: 2,
-      type: "video",
-      image:
-        "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=900",
-      caption: "Behind the scenes 🎥",
-      comments: 8,
-    },
-    {
-      id: 3,
-      type: "image",
-      image:
-        "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=900",
-      caption: "New collection available now ✨",
-      comments: 24,
-    },
-  ];
+  // Active Post & Comment
+  const currentPost = posts && posts.length > 0 ? posts[selectedPost] || posts[0] : null;
+  const currentComment = comments && comments.length > 0 ? comments[selectedComment] || comments[0] : null;
 
-  const comments = [
-    {
-      id: 1,
-      username: "john_doe",
-      avatar: "https://i.pravatar.cc/100?img=12",
-      comment: "How much does this cost?",
-      time: "2 min ago",
-    },
-    {
-      id: 2,
-      username: "sarah_w",
-      avatar: "https://i.pravatar.cc/100?img=32",
-      comment: "I want this! 🔥",
-      time: "10 min ago",
-    },
-    {
-      id: 3,
-      username: "mike_ross",
-      avatar: "https://i.pravatar.cc/100?img=45",
-      comment: "Where can I buy this?",
-      time: "18 min ago",
-    },
-    {
-      id: 4,
-      username: "anna_s",
-      avatar: "https://i.pravatar.cc/100?img=47",
-      comment: "Looks amazing ❤️",
-      time: "25 min ago",
-    },
-  ];
-
-  const currentPost = posts[selectedPost];
-  const currentComment = comments[selectedComment];
-
-  // Fetch connected account and check for Meta OAuth return callback
+  // Initial mount: fetch connected account and handle OAuth callback
   useEffect(() => {
     fetchConnectedAccount();
     handleOAuthCallback();
   }, []);
 
-  // Fetch automation for current post whenever selectedPost or accountData changes
+  // Whenever account connects or changes, fetch posts & recent events
   useEffect(() => {
-    if (accountData?.id) {
-      fetchAutomationForPost(posts[selectedPost]?.id, accountData.id);
+    if (connected && accountData?.id) {
+      fetchPosts();
       fetchRecentEvents(accountData.id);
     }
-  }, [selectedPost, accountData]);
+  }, [connected, accountData?.id]);
+
+  // Whenever selectedPost changes or posts load, fetch real comments & automation for that post
+  useEffect(() => {
+    if (currentPost?.id && accountData?.id) {
+      fetchCommentsForPost(currentPost.id);
+      fetchAutomationForPost(currentPost.id, accountData.id);
+    } else {
+      setComments([]);
+    }
+  }, [currentPost?.id, accountData?.id]);
+
+  // ============================================================================
+  // OAuth & Account Connection
+  // ============================================================================
 
   const handleOAuthCallback = async () => {
     if (typeof window === "undefined") return;
 
-    // Check one-time ref guard synchronously before any async work
     if (oauthProcessedRef.current) return;
 
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get("code");
     if (!code) return;
 
-    // Lock synchronously before starting token exchange
     oauthProcessedRef.current = true;
-
-    // Clean OAuth code from browser URL immediately
     window.history.replaceState({}, document.title, window.location.pathname);
 
-    // Strip trailing #_ fragment if present
     const cleanCode = code.replace(/#_$/, "").trim();
 
-    // Prevent duplicate token exchange in React StrictMode across remounts
     const sessionLockKey = `ig_code_lock_${cleanCode.substring(0, 16)}`;
     if (sessionStorage.getItem(sessionLockKey)) {
       console.log("[dashboard] OAuth code already submitted, skipping duplicate call.");
@@ -125,40 +97,15 @@ function Page() {
     }
     sessionStorage.setItem(sessionLockKey, "processing");
 
-    // Use exact redirect_uri stored at initiation or current dashboard URL
     const redirectUri =
       sessionStorage.getItem("instagram_oauth_redirect_uri") ||
       (window.location.origin + window.location.pathname);
-
-    try {
-      const msgUint8 = new TextEncoder().encode(cleanCode);
-      const hashBuffer = await crypto.subtle.digest("SHA-256", msgUint8);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const codeFingerprint = hashArray
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("")
-        .substring(0, 12);
-      console.log(
-        "[dashboard] OAuth callback captured code fingerprint:",
-        codeFingerprint,
-        "redirect_uri:",
-        redirectUri,
-      );
-    } catch (_) {}
 
     setConnecting(true);
     toast.info("Connecting your Instagram account with Meta...");
 
     try {
-      const { data, error } = await supabase.functions.invoke(
-        "instagram-auth",
-        {
-          body: {
-            code: cleanCode,
-            redirect_uri: redirectUri,
-          },
-        },
-      );
+      const { data, error } = await instagramService.exchangeCode(supabase, cleanCode, redirectUri);
 
       if (error) {
         let msg = error.message;
@@ -180,10 +127,7 @@ function Page() {
       if (data?.account) {
         setConnected(true);
         setAccountData(data.account);
-        toast.success(
-          `Instagram account @${data.account.instagram_username} connected successfully!`,
-        );
-        fetchRecentEvents(data.account.id);
+        toast.success(`Instagram account @${data.account.instagram_username} connected successfully!`);
       }
     } catch (err) {
       console.error("OAuth callback exchange error:", err);
@@ -195,20 +139,14 @@ function Page() {
 
   const handleConnectClick = async () => {
     if (connected && accountData?.id) {
-      // Allow disconnect
-      if (
-        window.confirm(
-          "Are you sure you want to disconnect your Instagram account?",
-        )
-      ) {
-        const { error } = await supabase
-          .from("instagram_accounts")
-          .delete()
-          .eq("id", accountData.id);
+      if (window.confirm("Are you sure you want to disconnect your Instagram account?")) {
+        const { error } = await instagramService.disconnectAccount(supabase, accountData.id);
 
         if (!error) {
           setConnected(false);
           setAccountData(null);
+          setPosts([]);
+          setComments([]);
           setCurrentAutomationId(null);
           setRecentEvents([]);
           toast.success("Instagram account disconnected.");
@@ -234,15 +172,7 @@ function Page() {
       const redirectUri = window.location.origin + window.location.pathname;
       sessionStorage.setItem("instagram_oauth_redirect_uri", redirectUri);
 
-      const { data, error } = await supabase.functions.invoke(
-        "instagram-auth",
-        {
-          body: {
-            action: "get_auth_url",
-            redirect_uri: redirectUri,
-          },
-        },
-      );
+      const { data, error } = await instagramService.getAuthUrl(supabase, redirectUri);
 
       if (error) {
         let msg = error.message;
@@ -252,14 +182,7 @@ function Page() {
             msg = errBody.error || errBody.message || msg;
           } catch (_) {}
         }
-
-        if (msg.includes("not found") || error.status === 404) {
-          toast.error(
-            "The 'instagram-auth' Edge Function is not deployed in Supabase yet. Please deploy it first.",
-          );
-        } else {
-          toast.error(msg);
-        }
+        toast.error(msg || "Could not retrieve Instagram authorization URL.");
         return;
       }
 
@@ -279,43 +202,105 @@ function Page() {
   };
 
   const fetchConnectedAccount = async () => {
-    setLoading(true);
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) return;
-
-      const { data: account, error } = await supabase
-        .from("instagram_accounts")
-        .select("id, instagram_user_id, instagram_username, status")
-        .eq("user_id", user.id)
-        .maybeSingle();
+      const { account, error } = await instagramService.getConnectedAccount(supabase);
 
       if (error) {
         console.error("Error fetching connected account:", error);
       } else if (account) {
         setConnected(true);
         setAccountData(account);
-        fetchRecentEvents(account.id);
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  // ============================================================================
+  // Real Instagram Data Fetching (Posts & Comments)
+  // ============================================================================
+
+  const fetchPosts = async (after = null) => {
+    if (after) {
+      setLoadingMorePosts(true);
+    } else {
+      setLoadingPosts(true);
+      setPostsError(null);
+    }
+
+    try {
+      const { posts: fetchedPosts, paging, error, expired } = await instagramService.getPosts(supabase, {
+        limit: 12,
+        after,
+      });
+
+      if (expired) {
+        setConnected(false);
+        setPosts([]);
+        setPostsError("Instagram session expired. Please reconnect your account.");
+        toast.error("Instagram token expired. Please reconnect.");
+        return;
+      }
+
+      if (error) {
+        setPostsError(error);
+        return;
+      }
+
+      if (after) {
+        setPosts((prev) => [...prev, ...(fetchedPosts || [])]);
+      } else {
+        setPosts(fetchedPosts || []);
+        setSelectedPost(0);
+      }
+      setPostsPaging(paging);
+    } catch (err) {
+      console.error("Error fetching posts:", err);
+      setPostsError("Failed to fetch Instagram posts.");
     } finally {
-      setLoading(false);
+      setLoadingPosts(false);
+      setLoadingMorePosts(false);
+    }
+  };
+
+  const fetchCommentsForPost = async (postId) => {
+    if (!postId) return;
+
+    setLoadingComments(true);
+    setCommentsError(null);
+    setReplyingCommentId(null);
+    setReplyText("");
+
+    try {
+      const { comments: fetchedComments, error, expired } = await instagramService.getComments(supabase, postId, {
+        limit: 50,
+      });
+
+      if (expired) {
+        setConnected(false);
+        toast.error("Instagram session expired. Please reconnect.");
+        return;
+      }
+
+      if (error) {
+        setCommentsError(error);
+        setComments([]);
+      } else {
+        setComments(fetchedComments || []);
+        setSelectedComment(0);
+      }
+    } catch (err) {
+      console.error("Error fetching comments:", err);
+      setCommentsError("Failed to fetch comments for this post.");
+      setComments([]);
+    } finally {
+      setLoadingComments(false);
     }
   };
 
   const fetchRecentEvents = async (accountId) => {
     try {
-      const { data, error } = await supabase
-        .from("instagram_webhook_events")
-        .select("*")
-        .eq("instagram_account_id", accountId)
-        .order("created_at", { ascending: false })
-        .limit(5);
-
+      const { data, error } = await instagramService.getRecentWebhookEvents(supabase, accountId);
       if (!error && data) {
         setRecentEvents(data);
       }
@@ -326,12 +311,7 @@ function Page() {
 
   const fetchAutomationForPost = async (postId, accountId) => {
     try {
-      const { data: automation, error } = await supabase
-        .from("instagram_automations")
-        .select("*")
-        .eq("instagram_account_id", accountId)
-        .eq("instagram_post_id", String(postId))
-        .maybeSingle();
+      const { data: automation, error } = await instagramService.getPostAutomation(supabase, accountId, postId);
 
       if (error && error.code !== "PGRST116") {
         console.error("Error fetching automation:", error);
@@ -344,7 +324,7 @@ function Page() {
         setCurrentAutomationId(null);
         setKeyword("price, buy, info");
         setDmMessage(
-          "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details.",
+          "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details."
         );
         setEnabled(true);
       }
@@ -352,6 +332,81 @@ function Page() {
       console.error(err);
     }
   };
+
+  // ============================================================================
+  // Comment Actions (Reply, Delete, Hide, Refresh)
+  // ============================================================================
+
+  const handleReplySubmit = async (commentId) => {
+    if (!replyText.trim()) {
+      toast.error("Please enter a reply message.");
+      return;
+    }
+
+    setSubmittingReply(true);
+    try {
+      const { success, error } = await instagramService.replyToComment(supabase, commentId, replyText);
+
+      if (error || !success) {
+        toast.error(error || "Failed to post reply.");
+      } else {
+        toast.success("Reply posted successfully to Instagram!");
+        setReplyText("");
+        setReplyingCommentId(null);
+        if (currentPost?.id) {
+          fetchCommentsForPost(currentPost.id);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("An error occurred while posting the reply.");
+    } finally {
+      setSubmittingReply(false);
+    }
+  };
+
+  const handleDeleteComment = async (commentId) => {
+    if (!window.confirm("Are you sure you want to delete this comment from Instagram?")) return;
+
+    setActionLoadingId(commentId);
+    try {
+      const { success, error } = await instagramService.deleteComment(supabase, commentId);
+
+      if (error || !success) {
+        toast.error(error || "Failed to delete comment.");
+      } else {
+        toast.success("Comment deleted from Instagram.");
+        setComments((prev) => prev.filter((c) => c.id !== commentId));
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("An error occurred while deleting the comment.");
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleHideComment = async (commentId, shouldHide = true) => {
+    setActionLoadingId(commentId);
+    try {
+      const { success, hidden, error } = await instagramService.hideComment(supabase, commentId, shouldHide);
+
+      if (error || !success) {
+        toast.error(error || "Failed to update comment visibility.");
+      } else {
+        toast.success(hidden ? "Comment hidden on Instagram." : "Comment unhidden on Instagram.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("An error occurred while updating comment visibility.");
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  // ============================================================================
+  // Automation Status & Save
+  // ============================================================================
 
   const handleToggleActive = async () => {
     const nextState = !enabled;
@@ -393,15 +448,20 @@ function Page() {
       return;
     }
 
+    if (!currentPost?.id) {
+      toast.error("Please select an Instagram post first.");
+      return;
+    }
+
     setSaving(true);
     try {
-      // Execute server-side validated RPC
-      const { data, error } = await supabase.rpc("save_instagram_automation", {
-        p_account_id: accountData.id,
-        p_post_id: String(currentPost.id),
-        p_keyword: keyword.trim(),
-        p_dm_message: dmMessage.trim(),
-        p_is_active: enabled,
+      const { data, error } = await instagramService.saveAutomation(supabase, {
+        accountId: accountData.id,
+        postId: currentPost.id,
+        keyword: keyword.trim(),
+        dmMessage: dmMessage.trim(),
+        isActive: enabled,
+        automationId: currentAutomationId,
       });
 
       if (error) {
@@ -421,23 +481,50 @@ function Page() {
     }
   };
 
+  // ============================================================================
+  // Formatting Helpers
+  // ============================================================================
+
+  const getMediaImageUrl = (post) => {
+    if (!post) return "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=900";
+    if (post.media_type === "VIDEO") {
+      return post.thumbnail_url || post.media_url || "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=900";
+    }
+    return post.media_url || post.thumbnail_url || "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=900";
+  };
+
+  const formatTimestamp = (timestamp) => {
+    if (!timestamp) return "";
+    try {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      const diffMin = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMin / 60);
+      const diffDays = Math.floor(diffHours / 24);
+
+      if (diffMin < 1) return "Just now";
+      if (diffMin < 60) return `${diffMin}m ago`;
+      if (diffHours < 24) return `${diffHours}h ago`;
+      if (diffDays < 7) return `${diffDays}d ago`;
+      return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    } catch (_) {
+      return "";
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 p-4 sm:p-6">
-      {" "}
       <div className="mx-auto max-w-6xl">
-        {/* Header */}{" "}
+        {/* Header */}
         <div className="mb-6">
-          {" "}
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            {" "}
             <div>
-              {" "}
               <h1 className="text-2xl font-semibold text-gray-900">
-                Instagram Auto DM{" "}
+                Instagram Auto DM
               </h1>
               <p className="mt-1 text-sm text-gray-500">
-                Automatically send Instagram DMs when users comment on your
-                posts.
+                Automatically send Instagram DMs when users comment on your posts.
               </p>
             </div>
             {/* Instagram Connection */}
@@ -458,6 +545,7 @@ function Page() {
             </button>
           </div>
         </div>
+
         {/* Connection Notice */}
         {!connected && (
           <div className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
@@ -472,8 +560,7 @@ function Page() {
                 </h2>
 
                 <p className="mt-1 text-sm text-gray-500">
-                  Connect Instagram to fetch your posts, videos and comments and
-                  automatically send DMs to users.
+                  Connect Instagram to fetch your real posts, videos, and comments and automatically send DMs to commenters matching your keywords.
                 </p>
               </div>
 
@@ -489,16 +576,17 @@ function Page() {
             </div>
           </div>
         )}
+
         {connected && (
           <>
             {/* Account */}
             <div className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-100 font-semibold">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-100 font-semibold text-gray-800">
                     {accountData?.instagram_username
                       ? accountData.instagram_username.charAt(0).toUpperCase()
-                      : "V"}
+                      : "I"}
                   </div>
 
                   <div>
@@ -507,7 +595,7 @@ function Page() {
                     </p>
 
                     <p className="text-xs text-gray-500">
-                      Instagram Business Account
+                      Instagram Professional Account
                     </p>
                   </div>
                 </div>
@@ -532,133 +620,370 @@ function Page() {
               <div className="space-y-6">
                 {/* Posts */}
                 <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-                  <div className="mb-4">
-                    <h2 className="font-medium text-gray-900">
-                      Select Instagram Post
-                    </h2>
-
-                    <p className="mt-1 text-sm text-gray-500">
-                      Choose the post or video where comments should trigger an
-                      automatic DM.
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-3">
-                    {posts.map((post, index) => (
-                      <button
-                        key={post.id}
-                        onClick={() => setSelectedPost(index)}
-                        className={`group relative overflow-hidden rounded-lg border-2 ${
-                          selectedPost === index
-                            ? "border-black"
-                            : "border-transparent"
-                        }`}
-                      >
-                        <img
-                          src={post.image}
-                          alt="Instagram post"
-                          className="aspect-square w-full object-cover transition group-hover:scale-105"
-                        />
-
-                        {post.type === "video" && (
-                          <div className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-1 text-xs text-white">
-                            ▶
-                          </div>
-                        )}
-
-                        <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-2 py-1 text-left text-xs text-white">
-                          {post.comments} comments
-                        </div>
-
-                        {selectedPost === index && (
-                          <div className="absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-black text-xs text-white">
-                            ✓
-                          </div>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Selected Post */}
-                <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-                  <h2 className="mb-4 font-medium text-gray-900">
-                    Selected Post
-                  </h2>
-
-                  <div className="overflow-hidden rounded-xl border border-gray-200">
-                    <img
-                      src={currentPost.image}
-                      alt="Selected Instagram post"
-                      className="aspect-video w-full object-cover"
-                    />
-
-                    <div className="p-4">
-                      <p className="text-sm font-medium text-gray-900">
-                        {currentPost.caption}
-                      </p>
-
-                      <p className="mt-2 text-xs text-gray-500">
-                        {currentPost.type === "video" ? "Video" : "Photo"} ·{" "}
-                        {currentPost.comments} comments
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <h2 className="font-medium text-gray-900">
+                        Select Instagram Post
+                      </h2>
+                      <p className="mt-1 text-sm text-gray-500">
+                        Choose the post or video where comments should trigger an automatic DM.
                       </p>
                     </div>
+
+                    <button
+                      onClick={() => fetchPosts()}
+                      disabled={loadingPosts}
+                      className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                      title="Refresh Posts"
+                    >
+                      {loadingPosts ? "Refreshing..." : "↻ Refresh"}
+                    </button>
                   </div>
+
+                  {/* Loading Posts State */}
+                  {loadingPosts && (
+                    <div className="flex flex-col items-center justify-center py-10 text-center">
+                      <div className="h-6 w-6 animate-spin rounded-full border-2 border-black border-t-transparent mb-2"></div>
+                      <p className="text-sm text-gray-500">Loading Instagram posts...</p>
+                    </div>
+                  )}
+
+                  {/* Error State */}
+                  {!loadingPosts && postsError && (
+                    <div className="rounded-lg bg-red-50 p-4 text-center text-sm text-red-600">
+                      <p>{postsError}</p>
+                      <button
+                        onClick={() => fetchPosts()}
+                        className="mt-2 text-xs font-medium underline hover:text-red-800"
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Empty State */}
+                  {!loadingPosts && !postsError && posts.length === 0 && (
+                    <div className="rounded-lg bg-gray-50 p-8 text-center text-sm text-gray-500">
+                      <p className="font-medium text-gray-700">No Instagram posts found.</p>
+                      <p className="mt-1 text-xs text-gray-400">
+                        Publish a post or Reel on your Instagram account to configure Auto DMs.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Posts Grid */}
+                  {!loadingPosts && !postsError && posts.length > 0 && (
+                    <>
+                      <div className="grid grid-cols-3 gap-3">
+                        {posts.map((post, index) => {
+                          const imageUrl = getMediaImageUrl(post);
+                          const isVideo = post.media_type === "VIDEO";
+                          const isCarousel = post.media_type === "CAROUSEL_ALBUM";
+                          const commentCount = post.comments_count ?? 0;
+
+                          return (
+                            <button
+                              key={post.id}
+                              onClick={() => setSelectedPost(index)}
+                              className={`group relative overflow-hidden rounded-lg border-2 text-left ${
+                                selectedPost === index
+                                  ? "border-black"
+                                  : "border-transparent hover:border-gray-300"
+                              }`}
+                            >
+                              <img
+                                src={imageUrl}
+                                alt={post.caption || "Instagram post"}
+                                className="aspect-square w-full object-cover transition group-hover:scale-105"
+                                onError={(e) => {
+                                  e.currentTarget.src =
+                                    "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=900";
+                                }}
+                              />
+
+                              {isVideo && (
+                                <div className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] text-white">
+                                  ▶ Video
+                                </div>
+                              )}
+
+                              {isCarousel && (
+                                <div className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] text-white">
+                                  ❐ Album
+                                </div>
+                              )}
+
+                              <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-2 py-1 text-left text-xs text-white">
+                                {commentCount} comments
+                              </div>
+
+                              {selectedPost === index && (
+                                <div className="absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-black text-xs text-white">
+                                  ✓
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Pagination: Load More */}
+                      {postsPaging?.cursors?.after && (
+                        <div className="mt-4 text-center">
+                          <button
+                            onClick={() => fetchPosts(postsPaging.cursors.after)}
+                            disabled={loadingMorePosts}
+                            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            {loadingMorePosts ? "Loading more..." : "Load More Posts"}
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
 
-                {/* Comments */}
+                {/* Selected Post Preview */}
+                {currentPost && (
+                  <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                    <div className="mb-4 flex items-center justify-between">
+                      <h2 className="font-medium text-gray-900">
+                        Selected Post
+                      </h2>
+                      {currentPost.permalink && (
+                        <a
+                          href={currentPost.permalink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-gray-500 hover:text-black underline"
+                        >
+                          View on Instagram ↗
+                        </a>
+                      )}
+                    </div>
+
+                    <div className="overflow-hidden rounded-xl border border-gray-200">
+                      <img
+                        src={getMediaImageUrl(currentPost)}
+                        alt={currentPost.caption || "Selected Instagram post"}
+                        className="aspect-video w-full object-cover"
+                        onError={(e) => {
+                          e.currentTarget.src =
+                            "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=900";
+                        }}
+                      />
+
+                      <div className="p-4">
+                        <p className="text-sm font-medium text-gray-900 line-clamp-3">
+                          {currentPost.caption || "No caption for this post."}
+                        </p>
+
+                        <p className="mt-2 text-xs text-gray-500">
+                          {currentPost.media_type === "VIDEO"
+                            ? "Video"
+                            : currentPost.media_type === "CAROUSEL_ALBUM"
+                              ? "Carousel Album"
+                              : "Photo"}{" "}
+                          · {currentPost.comments_count ?? comments.length} comments
+                          {currentPost.like_count !== undefined && ` · ${currentPost.like_count} likes`}
+                          {currentPost.timestamp && ` · ${formatTimestamp(currentPost.timestamp)}`}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Comments Section */}
                 <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-                  <div className="mb-4">
-                    <h2 className="font-medium text-gray-900">Post Comments</h2>
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <h2 className="font-medium text-gray-900">Post Comments</h2>
+                      <p className="mt-1 text-sm text-gray-500">
+                        Select a comment trigger for the automatic DM or manage replies.
+                      </p>
+                    </div>
 
-                    <p className="mt-1 text-sm text-gray-500">
-                      Select a comment trigger for the automatic DM.
-                    </p>
-                  </div>
-
-                  <div className="space-y-3">
-                    {comments.map((comment, index) => (
+                    {currentPost?.id && (
                       <button
-                        key={comment.id}
-                        onClick={() => setSelectedComment(index)}
-                        className={`flex w-full items-start gap-3 rounded-lg border p-3 text-left transition ${
-                          selectedComment === index
-                            ? "border-black bg-gray-50"
-                            : "border-gray-100 hover:border-gray-300"
-                        }`}
+                        onClick={() => fetchCommentsForPost(currentPost.id)}
+                        disabled={loadingComments}
+                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                        title="Refresh Comments"
                       >
-                        <img
-                          src={comment.avatar}
-                          alt={comment.username}
-                          className="h-9 w-9 rounded-full object-cover"
-                        />
-
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium text-gray-900">
-                              @{comment.username}
-                            </p>
-
-                            <span className="text-xs text-gray-400">
-                              {comment.time}
-                            </span>
-                          </div>
-
-                          <p className="mt-1 text-sm text-gray-600">
-                            {comment.comment}
-                          </p>
-                        </div>
-
-                        <div
-                          className={`mt-1 h-4 w-4 shrink-0 rounded-full border ${
-                            selectedComment === index
-                              ? "border-black bg-black"
-                              : "border-gray-300"
-                          }`}
-                        />
+                        {loadingComments ? "Refreshing..." : "↻ Refresh"}
                       </button>
-                    ))}
+                    )}
                   </div>
+
+                  {/* Loading Comments */}
+                  {loadingComments && (
+                    <div className="flex flex-col items-center justify-center py-8 text-center">
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-black border-t-transparent mb-2"></div>
+                      <p className="text-xs text-gray-500">Loading comments from Instagram...</p>
+                    </div>
+                  )}
+
+                  {/* Comments Error */}
+                  {!loadingComments && commentsError && (
+                    <div className="rounded-lg bg-red-50 p-4 text-center text-xs text-red-600">
+                      <p>{commentsError}</p>
+                      <button
+                        onClick={() => currentPost?.id && fetchCommentsForPost(currentPost.id)}
+                        className="mt-1 underline hover:text-red-800"
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  )}
+
+                  {/* No Comments State */}
+                  {!loadingComments && !commentsError && comments.length === 0 && (
+                    <div className="rounded-lg bg-gray-50 p-6 text-center text-xs text-gray-500">
+                      <p className="font-medium text-gray-700">No comments yet on this post.</p>
+                      <p className="mt-1 text-gray-400">
+                        When users comment on your Instagram post, they will appear here automatically.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Comments List */}
+                  {!loadingComments && !commentsError && comments.length > 0 && (
+                    <div className="space-y-3">
+                      {comments.map((comment, index) => {
+                        const commenterUsername = comment.username || "instagram_user";
+                        const initial = commenterUsername.charAt(0).toUpperCase() || "U";
+                        const isReplying = replyingCommentId === comment.id;
+
+                        return (
+                          <div
+                            key={comment.id}
+                            className={`rounded-lg border p-3 transition ${
+                              selectedComment === index
+                                ? "border-black bg-gray-50/70"
+                                : "border-gray-100 hover:border-gray-300"
+                            }`}
+                          >
+                            <div
+                              onClick={() => setSelectedComment(index)}
+                              className="flex cursor-pointer items-start gap-3 text-left"
+                            >
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold text-gray-700">
+                                {initial}
+                              </div>
+
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-sm font-medium text-gray-900">
+                                    @{commenterUsername}
+                                  </p>
+
+                                  <span className="text-xs text-gray-400">
+                                    {formatTimestamp(comment.timestamp)}
+                                  </span>
+                                </div>
+
+                                <p className="mt-1 text-sm text-gray-600">
+                                  {comment.text}
+                                </p>
+                              </div>
+
+                              <div
+                                className={`mt-1 h-4 w-4 shrink-0 rounded-full border ${
+                                  selectedComment === index
+                                    ? "border-black bg-black"
+                                    : "border-gray-300"
+                                }`}
+                              />
+                            </div>
+
+                            {/* Comment Actions Toolbar */}
+                            <div className="mt-2 flex items-center justify-between border-t border-gray-100 pt-2 text-xs">
+                              <div className="flex items-center gap-3">
+                                <button
+                                  onClick={() => {
+                                    if (isReplying) {
+                                      setReplyingCommentId(null);
+                                    } else {
+                                      setReplyingCommentId(comment.id);
+                                      setReplyText(`@${commenterUsername} `);
+                                    }
+                                  }}
+                                  className="font-medium text-gray-700 hover:text-black"
+                                >
+                                  {isReplying ? "Cancel" : "Reply"}
+                                </button>
+
+                                <button
+                                  onClick={() => handleHideComment(comment.id, true)}
+                                  disabled={actionLoadingId === comment.id}
+                                  className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                                >
+                                  Hide
+                                </button>
+
+                                <button
+                                  onClick={() => handleDeleteComment(comment.id)}
+                                  disabled={actionLoadingId === comment.id}
+                                  className="text-gray-400 hover:text-red-600 disabled:opacity-50"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+
+                              {comment.like_count !== undefined && comment.like_count > 0 && (
+                                <span className="text-gray-400">
+                                  ♥ {comment.like_count}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Inline Reply Input */}
+                            {isReplying && (
+                              <div className="mt-3 flex gap-2">
+                                <input
+                                  type="text"
+                                  value={replyText}
+                                  onChange={(e) => setReplyText(e.target.value)}
+                                  placeholder="Write a public reply..."
+                                  className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs outline-none focus:border-black"
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault();
+                                      handleReplySubmit(comment.id);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  onClick={() => handleReplySubmit(comment.id)}
+                                  disabled={submittingReply || !replyText.trim()}
+                                  className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+                                >
+                                  {submittingReply ? "Posting..." : "Post Reply"}
+                                </button>
+                              </div>
+                            )}
+
+                            {/* Sub-Replies Display */}
+                            {comment.replies?.data && comment.replies.data.length > 0 && (
+                              <div className="mt-2 space-y-1.5 pl-6 border-l-2 border-gray-100">
+                                {comment.replies.data.map((rep) => (
+                                  <div key={rep.id} className="text-xs text-gray-600">
+                                    <span className="font-semibold text-gray-800">
+                                      @{rep.username}:{" "}
+                                    </span>
+                                    <span>{rep.text}</span>
+                                    <span className="ml-2 text-[10px] text-gray-400">
+                                      {formatTimestamp(rep.timestamp)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -700,38 +1025,44 @@ function Page() {
 
                     <select className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-black">
                       <option>When someone comments</option>
-                      <option>When someone sends a message</option>
-                      <option>When someone follows me</option>
+                      <option disabled>When someone sends a message (coming soon)</option>
+                      <option disabled>When someone follows me (coming soon)</option>
                     </select>
                   </div>
 
                   {/* Keyword */}
                   <div className="mt-5">
                     <label className="mb-2 block text-sm font-medium text-gray-700">
-                      Comment Keyword
+                      Comment Keyword(s)
                     </label>
 
                     <input
                       type="text"
                       value={keyword}
                       onChange={(e) => setKeyword(e.target.value)}
-                      placeholder="e.g. price, buy, info"
+                      placeholder="e.g. price, buy, info, cost"
                       className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-black"
                     />
 
                     <p className="mt-1 text-xs text-gray-400">
-                      DM can be triggered when a comment contains this keyword.
+                      Separate multiple keywords with commas. DMs are triggered case-insensitively when any keyword is found in the comment.
                     </p>
                   </div>
 
-                  {/* Selected Comment */}
+                  {/* Selected Comment Preview */}
                   <div className="mt-5 rounded-lg bg-gray-50 p-3">
                     <p className="text-xs font-medium text-gray-500">
                       Example comment
                     </p>
 
                     <p className="mt-1 text-sm text-gray-800">
-                      @{currentComment.username}: "{currentComment.comment}"
+                      {currentComment ? (
+                        <>
+                          @{currentComment.username || "instagram_user"}: "{currentComment.text || currentComment.comment}"
+                        </>
+                      ) : (
+                        <span className="text-gray-400">Select a comment on the left to preview</span>
+                      )}
                     </p>
                   </div>
 
@@ -750,17 +1081,16 @@ function Page() {
                     />
 
                     <p className="mt-1 text-xs text-gray-400">
-                      This message will be sent to the Instagram user who
-                      comments.
+                      This message will be sent to the Instagram user who comments.
                     </p>
                   </div>
 
                   {/* Save */}
                   <button
                     onClick={handleSaveAutomation}
-                    disabled={saving}
+                    disabled={saving || !currentPost?.id}
                     className={`mt-6 w-full rounded-lg bg-black px-5 py-3 text-sm font-medium text-white transition hover:bg-gray-800 ${
-                      saving ? "cursor-not-allowed opacity-70" : ""
+                      saving || !currentPost?.id ? "cursor-not-allowed opacity-70" : ""
                     }`}
                   >
                     {saving ? "Saving Auto DM..." : "Save Auto DM"}
@@ -777,7 +1107,7 @@ function Page() {
                     <div className="rounded-lg bg-gray-50 p-3">
                       <p className="text-xs text-gray-400">WHEN</p>
                       <p className="mt-1 text-sm font-medium text-gray-800">
-                        Someone comments on this post
+                        Someone comments on {currentPost ? "selected post" : "this post"}
                       </p>
                     </div>
 
@@ -785,11 +1115,22 @@ function Page() {
 
                     <div className="rounded-lg bg-gray-50 p-3">
                       <p className="text-xs text-gray-400">
-                        IF COMMENT CONTAINS
+                        IF COMMENT CONTAINS (ANY OF)
                       </p>
-                      <p className="mt-1 text-sm font-medium text-gray-800">
-                        "{keyword}"
-                      </p>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {keyword
+                          .split(",")
+                          .map((k) => k.trim())
+                          .filter(Boolean)
+                          .map((k, i) => (
+                            <span
+                              key={i}
+                              className="rounded bg-gray-200 px-2 py-0.5 text-xs font-medium text-gray-800"
+                            >
+                              "{k}"
+                            </span>
+                          ))}
+                      </div>
                     </div>
 
                     <div className="flex justify-center text-gray-400">↓</div>
@@ -810,14 +1151,16 @@ function Page() {
                       Recent Auto DMs
                     </h2>
 
-                    <span className="text-xs text-gray-400">Today</span>
+                    <span className="text-xs text-gray-400">Live Webhook Log</span>
                   </div>
 
                   <div className="mt-4 space-y-3">
                     {recentEvents && recentEvents.length > 0 ? (
                       recentEvents.map((evt) => {
                         const commenterUsername =
-                          evt.payload?.commenter?.username || "instagram_user";
+                          evt.payload?.commenter?.username ||
+                          evt.payload?.from?.username ||
+                          "instagram_user";
                         const commentText =
                           evt.payload?.comment_text ||
                           evt.payload?.text ||
@@ -842,7 +1185,9 @@ function Page() {
                                 className={`rounded-full px-2.5 py-1 text-xs font-medium ${
                                   isSent
                                     ? "bg-green-50 text-green-600"
-                                    : "bg-gray-100 text-gray-600"
+                                    : resultStatus === "failed"
+                                      ? "bg-red-50 text-red-600"
+                                      : "bg-gray-100 text-gray-600"
                                 }`}
                               >
                                 {isSent ? "Sent" : resultStatus}
@@ -852,43 +1197,18 @@ function Page() {
                             <p className="mt-1 text-xs text-gray-500">
                               Triggered by: "{commentText}"
                             </p>
+                            {evt.created_at && (
+                              <p className="mt-0.5 text-[10px] text-gray-400">
+                                {formatTimestamp(evt.created_at)}
+                              </p>
+                            )}
                           </div>
                         );
                       })
                     ) : (
-                      <>
-                        <div className="rounded-lg border border-gray-100 p-3">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium text-gray-900">
-                              @john_doe
-                            </p>
-
-                            <span className="rounded-full bg-green-50 px-2.5 py-1 text-xs font-medium text-green-600">
-                              Sent
-                            </span>
-                          </div>
-
-                          <p className="mt-1 text-xs text-gray-500">
-                            Triggered by: "How much does this cost?"
-                          </p>
-                        </div>
-
-                        <div className="rounded-lg border border-gray-100 p-3">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium text-gray-900">
-                              @sarah_w
-                            </p>
-
-                            <span className="rounded-full bg-green-50 px-2.5 py-1 text-xs font-medium text-green-600">
-                              Sent
-                            </span>
-                          </div>
-
-                          <p className="mt-1 text-xs text-gray-500">
-                            Triggered by: "I want this! 🔥"
-                          </p>
-                        </div>
-                      </>
+                      <div className="rounded-lg border border-gray-100 p-4 text-center text-xs text-gray-400">
+                        No automated DMs triggered yet. When users comment matching keywords, logs appear here.
+                      </div>
                     )}
                   </div>
                 </div>
