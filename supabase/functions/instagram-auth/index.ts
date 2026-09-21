@@ -444,166 +444,62 @@ Deno.serve(async (req: Request) => {
 
       const limit = Number(body.limit) || 50;
       const afterParam = body.after ? `&after=${encodeURIComponent(String(body.after))}` : "";
-      const commentsUrl =
+
+      // Multi-tier URL attempts to prevent field syntax errors on different IG account/media types
+      const commentUrls = [
+        // Attempt 1: Standard full fields with replies
         `https://graph.instagram.com/v21.0/${encodeURIComponent(
           String(postId),
-        )}/comments?fields=id,text,timestamp,username,like_count,from,replies{id,text,timestamp,username,from}&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+        )}/comments?fields=id,text,timestamp,username,like_count,from,replies{id,text,timestamp,username}&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
           igAccount.access_token,
-        )}`;
+        )}`,
+        // Attempt 2: Standard fields with from
+        `https://graph.instagram.com/v21.0/${encodeURIComponent(
+          String(postId),
+        )}/comments?fields=id,text,timestamp,username,like_count,from&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`,
+        // Attempt 3: Core minimal fields (100% supported by all Instagram Graph API endpoints)
+        `https://graph.instagram.com/v21.0/${encodeURIComponent(
+          String(postId),
+        )}/comments?fields=id,text,timestamp,username,like_count&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`,
+      ];
 
-      try {
-        const commentsRes = await fetch(commentsUrl, { method: "GET" });
-        const commentsData = await commentsRes.json();
+      let commentsData: any = null;
+      let lastApiError: any = null;
 
-        if (!commentsRes.ok || commentsData.error) {
-          console.error("[instagram-auth] Failed to fetch comments:", commentsData);
+      for (const url of commentUrls) {
+        try {
+          const res = await fetch(url, { method: "GET" });
+          const json = await res.json();
 
-          if (commentsData?.error?.code === 190) {
-            return new Response(
-              JSON.stringify({
-                success: false,
-                error: "Instagram session expired. Please reconnect your account.",
-                expired: true,
-              }),
-              {
-                status: 401,
-                headers: {
-                  ...corsHeaders,
-                  "Content-Type": "application/json",
-                },
-              },
-            );
+          if (res.ok && Array.isArray(json.data)) {
+            commentsData = json;
+            break;
+          } else if (json?.error?.code === 190) {
+            // Token expired
+            lastApiError = json.error;
+            break;
+          } else {
+            lastApiError = json?.error || { message: "Failed to fetch comments" };
+            console.warn(`[instagram-auth] Comment fetch attempt failed for url, trying next fallback:`, json?.error?.message);
           }
-
-          // Fallback: Query persisted comments from instagram_comments if Meta API fails
-          const { data: cachedComments } = await supabaseAdmin
-            .from("instagram_comments")
-            .select("*")
-            .eq("post_id", String(postId))
-            .order("commented_at", { ascending: false });
-
-          if (cachedComments && cachedComments.length > 0) {
-            const mappedCache = cachedComments.map((c: any) => ({
-              id: c.instagram_comment_id,
-              text: c.comment_text,
-              timestamp: c.commented_at,
-              username: c.instagram_username,
-              userId: c.instagram_user_id,
-              like_count: c.like_count ?? 0,
-            }));
-
-            return new Response(
-              JSON.stringify({
-                success: true,
-                data: mappedCache,
-                paging: null,
-                cached: true,
-              }),
-              {
-                status: 200,
-                headers: {
-                  ...corsHeaders,
-                  "Content-Type": "application/json",
-                },
-              },
-            );
-          }
-
-          return new Response(
-            JSON.stringify({
-              success: false,
-              error: commentsData?.error?.message || "Failed to fetch comments for this post.",
-            }),
-            {
-              status: 400,
-              headers: {
-                ...corsHeaders,
-                "Content-Type": "application/json",
-              },
-            },
-          );
+        } catch (fetchErr) {
+          lastApiError = fetchErr;
         }
+      }
 
-        const rawList = Array.isArray(commentsData.data) ? commentsData.data : [];
-        const normalizedList = rawList.map((c: any) => {
-          const resolvedUsername =
-            c.username ||
-            c.from?.username ||
-            c.user?.username ||
-            c.from?.name ||
-            c.name ||
-            "instagram_user";
-
-          const subReplies = c.replies?.data && Array.isArray(c.replies.data)
-            ? c.replies.data.map((r: any) => ({
-                id: String(r.id || ""),
-                text: String(r.text || ""),
-                timestamp: r.timestamp || null,
-                username: r.username || r.from?.username || r.user?.username || "instagram_user",
-              }))
-            : [];
-
-          return {
-            id: String(c.id || ""),
-            text: String(c.text || ""),
-            timestamp: c.timestamp || null,
-            username: resolvedUsername,
-            userId: c.from?.id || c.user?.id || c.user_id || null,
-            like_count: c.like_count ?? 0,
-            from: c.from || (c.username ? { username: c.username } : null),
-            replies: subReplies.length > 0 ? { data: subReplies } : (c.replies || null),
-          };
-        });
-
-        // Synchronize comments into instagram_comments table in Supabase
-        if (normalizedList.length > 0 && igAccount?.id) {
-          try {
-            const commentRows = normalizedList.map((c: any) => ({
-              user_id: user.id,
-              instagram_account_id: igAccount.id,
-              post_id: String(postId),
-              instagram_comment_id: c.id,
-              instagram_user_id: c.userId ? String(c.userId) : null,
-              instagram_username: c.username,
-              comment_text: c.text,
-              parent_comment_id: null,
-              like_count: c.like_count ?? 0,
-              commented_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }));
-
-            await supabaseAdmin
-              .from("instagram_comments")
-              .upsert(commentRows, {
-                onConflict: "instagram_comment_id",
-              });
-          } catch (dbErr) {
-            console.warn("[instagram-auth] Non-blocking error saving comments to DB:", dbErr);
-          }
-        }
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            data: normalizedList,
-            paging: commentsData.paging || null,
-          }),
-          {
-            status: 200,
-            headers: {
-              ...corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
-      } catch (err) {
+      if (lastApiError?.code === 190) {
         return new Response(
           JSON.stringify({
             success: false,
-            error: (err as Error)?.message || "Error fetching comments.",
+            error: "Instagram session expired. Please reconnect your account.",
+            expired: true,
           }),
           {
-            status: 500,
+            status: 401,
             headers: {
               ...corsHeaders,
               "Content-Type": "application/json",
@@ -611,6 +507,109 @@ Deno.serve(async (req: Request) => {
           },
         );
       }
+
+      const rawList = Array.isArray(commentsData?.data) ? commentsData.data : [];
+
+      const normalizedList = rawList.map((c: any) => {
+        const resolvedUsername =
+          c.username ||
+          c.from?.username ||
+          c.user?.username ||
+          c.from?.name ||
+          c.name ||
+          "instagram_user";
+
+        const subReplies = c.replies?.data && Array.isArray(c.replies.data)
+          ? c.replies.data.map((r: any) => ({
+              id: String(r.id || ""),
+              text: String(r.text || ""),
+              timestamp: r.timestamp || null,
+              username: r.username || r.from?.username || r.user?.username || "instagram_user",
+            }))
+          : [];
+
+        return {
+          id: String(c.id || ""),
+          text: String(c.text || ""),
+          timestamp: c.timestamp || null,
+          username: resolvedUsername,
+          userId: c.from?.id || c.user?.id || c.user_id || null,
+          like_count: c.like_count ?? 0,
+          from: c.from || (c.username ? { username: c.username } : null),
+          replies: subReplies.length > 0 ? { data: subReplies } : (c.replies || null),
+        };
+      });
+
+      // Also merge any comments received via webhook saved in instagram_webhook_events
+      try {
+        const { data: webhookEvents } = await supabaseAdmin
+          .from("instagram_webhook_events")
+          .select("payload, created_at")
+          .eq("event_type", "comment")
+          .order("created_at", { ascending: false })
+          .limit(50);
+
+        if (webhookEvents && webhookEvents.length > 0) {
+          const existingIds = new Set(normalizedList.map((c: any) => c.id));
+
+          for (const ev of webhookEvents) {
+            const p = ev.payload;
+            if (p && String(p.post_id || "") === String(postId) && p.comment_id && !existingIds.has(String(p.comment_id))) {
+              normalizedList.unshift({
+                id: String(p.comment_id),
+                text: String(p.comment_text || p.text || ""),
+                timestamp: p.entry_time ? new Date(p.entry_time * 1000).toISOString() : ev.created_at,
+                username: p.commenter?.username || p.from?.username || "instagram_user",
+                userId: p.commenter?.id || p.from?.id || null,
+                like_count: 0,
+                from: { username: p.commenter?.username || "instagram_user" },
+                replies: null,
+              });
+              existingIds.add(String(p.comment_id));
+            }
+          }
+        }
+      } catch (_) {}
+
+      // Try caching to instagram_comments if table exists
+      if (normalizedList.length > 0 && igAccount?.id) {
+        try {
+          const commentRows = normalizedList.map((c: any) => ({
+            user_id: user.id,
+            instagram_account_id: igAccount.id,
+            post_id: String(postId),
+            instagram_comment_id: c.id,
+            instagram_user_id: c.userId ? String(c.userId) : null,
+            instagram_username: c.username,
+            comment_text: c.text,
+            parent_comment_id: null,
+            like_count: c.like_count ?? 0,
+            commented_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }));
+
+          await supabaseAdmin
+            .from("instagram_comments")
+            .upsert(commentRows, {
+              onConflict: "instagram_comment_id",
+            });
+        } catch (_) {}
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: normalizedList,
+          paging: commentsData?.paging || null,
+        }),
+        {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+          },
+        },
+      );
     }
 
     // --------------------------------------------------

@@ -344,13 +344,17 @@ export const instagramService = {
   async getRecentWebhookEvents(supabase, accountId) {
     const client = supabase || createClient();
 
-    const { data, error } = await client
+    let query = client
       .from("instagram_webhook_events")
       .select("*")
-      .eq("instagram_account_id", accountId)
       .order("created_at", { ascending: false })
-      .limit(10);
+      .limit(20);
 
+    if (accountId) {
+      query = query.or(`instagram_account_id.eq.${accountId},instagram_account_id.is.null`);
+    }
+
+    const { data, error } = await query;
     return { data: data || [], error };
   },
 };

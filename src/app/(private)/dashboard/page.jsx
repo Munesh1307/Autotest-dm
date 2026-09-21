@@ -36,6 +36,7 @@ function Page() {
 
   // Automation Configuration State
   const [enabled, setEnabled] = useState(true);
+  const [triggerType, setTriggerType] = useState("post"); // "post" | "all_posts"
   const [keyword, setKeyword] = useState("price, buy, info");
   const [dmMessage, setDmMessage] = useState(
     "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details."
@@ -43,6 +44,7 @@ function Page() {
   const [saving, setSaving] = useState(false);
   const [currentAutomationId, setCurrentAutomationId] = useState(null);
   const [recentEvents, setRecentEvents] = useState([]);
+  const [loadingEvents, setLoadingEvents] = useState(false);
 
   // Active Post & Comment
   const currentPost = posts && posts.length > 0 ? posts[selectedPost] || posts[0] : null;
@@ -54,23 +56,35 @@ function Page() {
     handleOAuthCallback();
   }, []);
 
-  // Whenever account connects or changes, fetch posts & recent events
+  // Whenever account connects or changes, fetch posts & recent events, and set up live polling
   useEffect(() => {
     if (connected && accountData?.id) {
       fetchPosts();
       fetchRecentEvents(accountData.id);
+
+      // Auto-poll recent Auto DM logs every 10 seconds
+      const interval = setInterval(() => {
+        fetchRecentEvents(accountData.id, true);
+      }, 10000);
+
+      return () => clearInterval(interval);
     }
   }, [connected, accountData?.id]);
 
-  // Whenever selectedPost changes or posts load, fetch real comments & automation for that post
+  // Whenever selectedPost or triggerType changes, fetch comments & automation
   useEffect(() => {
-    if (currentPost?.id && accountData?.id) {
-      fetchCommentsForPost(currentPost.id);
-      fetchAutomationForPost(currentPost.id, accountData.id);
-    } else {
-      setComments([]);
+    if (accountData?.id) {
+      const targetPostId = triggerType === "all_posts" ? "all_posts" : currentPost?.id;
+      if (targetPostId) {
+        fetchAutomationForPost(targetPostId, accountData.id);
+      }
+      if (currentPost?.id) {
+        fetchCommentsForPost(currentPost.id);
+      } else {
+        setComments([]);
+      }
     }
-  }, [currentPost?.id, accountData?.id]);
+  }, [currentPost?.id, accountData?.id, triggerType]);
 
   // ============================================================================
   // OAuth & Account Connection
@@ -298,7 +312,8 @@ function Page() {
     }
   };
 
-  const fetchRecentEvents = async (accountId) => {
+  const fetchRecentEvents = async (accountId, silent = false) => {
+    if (!silent) setLoadingEvents(true);
     try {
       const { data, error } = await instagramService.getRecentWebhookEvents(supabase, accountId);
       if (!error && data) {
@@ -306,6 +321,8 @@ function Page() {
       }
     } catch (err) {
       console.error("Error fetching recent events:", err);
+    } finally {
+      if (!silent) setLoadingEvents(false);
     }
   };
 
@@ -448,7 +465,9 @@ function Page() {
       return;
     }
 
-    if (!currentPost?.id) {
+    const targetPostId = triggerType === "all_posts" ? "all_posts" : currentPost?.id;
+
+    if (!targetPostId) {
       toast.error("Please select an Instagram post first.");
       return;
     }
@@ -457,7 +476,7 @@ function Page() {
     try {
       const { data, error } = await instagramService.saveAutomation(supabase, {
         accountId: accountData.id,
-        postId: currentPost.id,
+        postId: targetPostId,
         keyword: keyword.trim(),
         dmMessage: dmMessage.trim(),
         isActive: enabled,
@@ -472,7 +491,11 @@ function Page() {
       if (data?.id) {
         setCurrentAutomationId(data.id);
       }
-      toast.success("Auto DM automation saved successfully!");
+      toast.success(
+        triggerType === "all_posts"
+          ? "Global Auto DM for ALL posts saved successfully!"
+          : "Auto DM for selected post saved successfully!"
+      );
     } catch (err) {
       console.error(err);
       toast.error(err?.message || "An unexpected error occurred.");
@@ -687,7 +710,7 @@ function Page() {
                               onClick={() => setSelectedPost(index)}
                               className={`group relative overflow-hidden rounded-lg border-2 text-left ${
                                 selectedPost === index
-                                  ? "border-black"
+                                    ? "border-black"
                                   : "border-transparent hover:border-gray-300"
                               }`}
                             >
@@ -797,9 +820,11 @@ function Page() {
                 <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                   <div className="mb-4 flex items-center justify-between">
                     <div>
-                      <h2 className="font-medium text-gray-900">Post Comments</h2>
+                      <h2 className="font-medium text-gray-900">
+                        Post Comments {comments.length > 0 && `(${comments.length})`}
+                      </h2>
                       <p className="mt-1 text-sm text-gray-500">
-                        Select a comment trigger for the automatic DM or manage replies.
+                        Real-time comments from Instagram users on this post.
                       </p>
                     </div>
 
@@ -810,7 +835,7 @@ function Page() {
                         className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
                         title="Refresh Comments"
                       >
-                        {loadingComments ? "Refreshing..." : "↻ Refresh"}
+                        {loadingComments ? "Refreshing..." : "↻ Refresh Comments"}
                       </button>
                     )}
                   </div>
@@ -841,7 +866,7 @@ function Page() {
                     <div className="rounded-lg bg-gray-50 p-6 text-center text-xs text-gray-500">
                       <p className="font-medium text-gray-700">No comments yet on this post.</p>
                       <p className="mt-1 text-gray-400">
-                        When users comment on your Instagram post, they will appear here automatically.
+                        When users comment on this Instagram post or reel, their username and comment will appear here.
                       </p>
                     </div>
                   )}
@@ -1020,14 +1045,27 @@ function Page() {
                   {/* Trigger Type */}
                   <div className="mt-5">
                     <label className="mb-2 block text-sm font-medium text-gray-700">
-                      Trigger
+                      Trigger Scope
                     </label>
 
-                    <select className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-black">
-                      <option>When someone comments</option>
-                      <option disabled>When someone sends a message (coming soon)</option>
-                      <option disabled>When someone follows me (coming soon)</option>
+                    <select
+                      value={triggerType}
+                      onChange={(e) => setTriggerType(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-black"
+                    >
+                      <option value="post">
+                        When someone comments on this selected post
+                      </option>
+                      <option value="all_posts">
+                        When someone comments on ANY post on my account (All Posts)
+                      </option>
                     </select>
+
+                    <p className="mt-1 text-xs text-gray-400">
+                      {triggerType === "all_posts"
+                        ? "🌍 Global rule: When any user comments with matching keywords on ANY of your posts/reels, they will receive this Auto DM."
+                        : "🎯 Post-specific rule: Only comments on this selected post matching the keywords will trigger this Auto DM."}
+                    </p>
                   </div>
 
                   {/* Keyword */}
@@ -1040,12 +1078,12 @@ function Page() {
                       type="text"
                       value={keyword}
                       onChange={(e) => setKeyword(e.target.value)}
-                      placeholder="e.g. price, buy, info, cost"
+                      placeholder="e.g. price, buy, info, link, offer"
                       className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-black"
                     />
 
                     <p className="mt-1 text-xs text-gray-400">
-                      Separate multiple keywords with commas. DMs are triggered case-insensitively when any keyword is found in the comment.
+                      Separate multiple keywords with commas (e.g., <code>price, info, buy</code>). Matching is case-insensitive.
                     </p>
                   </div>
 
@@ -1081,16 +1119,16 @@ function Page() {
                     />
 
                     <p className="mt-1 text-xs text-gray-400">
-                      This message will be sent to the Instagram user who comments.
+                      This message will be sent directly to the Instagram user who comments.
                     </p>
                   </div>
 
                   {/* Save */}
                   <button
                     onClick={handleSaveAutomation}
-                    disabled={saving || !currentPost?.id}
+                    disabled={saving || (triggerType !== "all_posts" && !currentPost?.id)}
                     className={`mt-6 w-full rounded-lg bg-black px-5 py-3 text-sm font-medium text-white transition hover:bg-gray-800 ${
-                      saving || !currentPost?.id ? "cursor-not-allowed opacity-70" : ""
+                      saving || (triggerType !== "all_posts" && !currentPost?.id) ? "cursor-not-allowed opacity-70" : ""
                     }`}
                   >
                     {saving ? "Saving Auto DM..." : "Save Auto DM"}
@@ -1107,7 +1145,9 @@ function Page() {
                     <div className="rounded-lg bg-gray-50 p-3">
                       <p className="text-xs text-gray-400">WHEN</p>
                       <p className="mt-1 text-sm font-medium text-gray-800">
-                        Someone comments on {currentPost ? "selected post" : "this post"}
+                        {triggerType === "all_posts"
+                          ? "Someone comments on ANY post on your account"
+                          : `Someone comments on selected post (${currentPost?.caption ? currentPost.caption.slice(0, 30) + "..." : "Selected Post"})`}
                       </p>
                     </div>
 
@@ -1147,11 +1187,27 @@ function Page() {
                 {/* Recent */}
                 <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                   <div className="flex items-center justify-between">
-                    <h2 className="font-medium text-gray-900">
-                      Recent Auto DMs
-                    </h2>
+                    <div>
+                      <h2 className="font-medium text-gray-900">
+                        Recent Auto DMs
+                      </h2>
+                      <p className="text-xs text-gray-400">Live Webhook Log</p>
+                    </div>
 
-                    <span className="text-xs text-gray-400">Live Webhook Log</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => accountData?.id && fetchRecentEvents(accountData.id)}
+                        disabled={loadingEvents}
+                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                        title="Refresh Live Logs"
+                      >
+                        {loadingEvents ? "..." : "↻ Refresh"}
+                      </button>
+                      <span className="flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-medium text-green-700">
+                        <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                        Live
+                      </span>
+                    </div>
                   </div>
 
                   <div className="mt-4 space-y-3">
@@ -1167,7 +1223,7 @@ function Page() {
                           "Comment received";
                         const resultStatus =
                           evt.payload?.processing_result?.status ||
-                          (evt.processed ? "Sent" : "Pending");
+                          (evt.processed ? "sent" : "pending");
                         const isSent =
                           resultStatus === "sent" || resultStatus === "Sent";
 
@@ -1190,15 +1246,20 @@ function Page() {
                                       : "bg-gray-100 text-gray-600"
                                 }`}
                               >
-                                {isSent ? "Sent" : resultStatus}
+                                {isSent ? "DM Sent ✓" : resultStatus}
                               </span>
                             </div>
 
-                            <p className="mt-1 text-xs text-gray-500">
-                              Triggered by: "{commentText}"
+                            <p className="mt-1 text-xs text-gray-600">
+                              Comment: "{commentText}"
                             </p>
+                            {evt.payload?.processing_result?.dm_message_sent && (
+                              <p className="mt-1 rounded bg-gray-50 p-2 text-[11px] text-gray-500 italic">
+                                DM: "{evt.payload.processing_result.dm_message_sent}"
+                              </p>
+                            )}
                             {evt.created_at && (
-                              <p className="mt-0.5 text-[10px] text-gray-400">
+                              <p className="mt-1 text-[10px] text-gray-400">
                                 {formatTimestamp(evt.created_at)}
                               </p>
                             )}
@@ -1207,7 +1268,7 @@ function Page() {
                       })
                     ) : (
                       <div className="rounded-lg border border-gray-100 p-4 text-center text-xs text-gray-400">
-                        No automated DMs triggered yet. When users comment matching keywords, logs appear here.
+                        No automated DMs triggered yet. When users comment matching your keyword(s), live logs appear here.
                       </div>
                     )}
                   </div>
