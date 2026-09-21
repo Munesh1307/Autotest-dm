@@ -340,6 +340,32 @@ Deno.serve(async (req: Request) => {
           );
         }
 
+        // Synchronize fetched posts into instagram_posts table
+        if (Array.isArray(mediaData.data) && mediaData.data.length > 0 && igAccount?.id) {
+          try {
+            const postRows = mediaData.data.map((p: any) => ({
+              user_id: user.id,
+              instagram_account_id: igAccount.id,
+              instagram_post_id: String(p.id),
+              caption: p.caption || "",
+              media_type: p.media_type || "IMAGE",
+              media_url: p.media_url || null,
+              thumbnail_url: p.thumbnail_url || null,
+              permalink: p.permalink || null,
+              like_count: p.like_count ?? 0,
+              comments_count: p.comments_count ?? 0,
+              posted_at: p.timestamp ? new Date(p.timestamp).toISOString() : null,
+              updated_at: new Date().toISOString(),
+            }));
+
+            await supabaseAdmin
+              .from("instagram_posts")
+              .upsert(postRows, { onConflict: "instagram_post_id" });
+          } catch (dbErr) {
+            console.warn("[instagram-auth] Non-blocking error storing posts in DB:", dbErr);
+          }
+        }
+
         return new Response(
           JSON.stringify({
             success: true,
@@ -372,7 +398,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // --------------------------------------------------
-    // 6. Fetch Post Comments
+    // 6. Fetch Post Comments & Synchronize to Database
     // --------------------------------------------------
 
     if (body.action === "get_comments") {
@@ -449,6 +475,40 @@ Deno.serve(async (req: Request) => {
             );
           }
 
+          // Fallback: Query persisted comments from instagram_comments if Meta API fails
+          const { data: cachedComments } = await supabaseAdmin
+            .from("instagram_comments")
+            .select("*")
+            .eq("post_id", String(postId))
+            .order("commented_at", { ascending: false });
+
+          if (cachedComments && cachedComments.length > 0) {
+            const mappedCache = cachedComments.map((c: any) => ({
+              id: c.instagram_comment_id,
+              text: c.comment_text,
+              timestamp: c.commented_at,
+              username: c.instagram_username,
+              userId: c.instagram_user_id,
+              like_count: c.like_count ?? 0,
+            }));
+
+            return new Response(
+              JSON.stringify({
+                success: true,
+                data: mappedCache,
+                paging: null,
+                cached: true,
+              }),
+              {
+                status: 200,
+                headers: {
+                  ...corsHeaders,
+                  "Content-Type": "application/json",
+                },
+              },
+            );
+          }
+
           return new Response(
             JSON.stringify({
               success: false,
@@ -494,6 +554,33 @@ Deno.serve(async (req: Request) => {
             replies: subReplies.length > 0 ? { data: subReplies } : (c.replies || null),
           };
         });
+
+        // Synchronize comments into instagram_comments table in Supabase
+        if (normalizedList.length > 0 && igAccount?.id) {
+          try {
+            const commentRows = normalizedList.map((c: any) => ({
+              user_id: user.id,
+              instagram_account_id: igAccount.id,
+              post_id: String(postId),
+              instagram_comment_id: c.id,
+              instagram_user_id: c.userId ? String(c.userId) : null,
+              instagram_username: c.username,
+              comment_text: c.text,
+              parent_comment_id: null,
+              like_count: c.like_count ?? 0,
+              commented_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            }));
+
+            await supabaseAdmin
+              .from("instagram_comments")
+              .upsert(commentRows, {
+                onConflict: "instagram_comment_id",
+              });
+          } catch (dbErr) {
+            console.warn("[instagram-auth] Non-blocking error saving comments to DB:", dbErr);
+          }
+        }
 
         return new Response(
           JSON.stringify({

@@ -195,7 +195,33 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 2. Duplicate Check: Verify if this comment was already processed (Idempotency)
+            // 2. Synchronize comment to instagram_comments table
+            if (account?.id && account?.user_id) {
+              try {
+                await supabaseAdmin
+                  .from("instagram_comments")
+                  .upsert(
+                    {
+                      user_id: account.user_id,
+                      instagram_account_id: account.id,
+                      post_id: postId,
+                      instagram_comment_id: commentId,
+                      instagram_user_id: commenterId || null,
+                      instagram_username: commenterUsername || "instagram_user",
+                      comment_text: rawCommentText,
+                      parent_comment_id: (commentVal as any).parent_id || null,
+                      commented_at: entry.time ? new Date(entry.time * 1000).toISOString() : new Date().toISOString(),
+                      updated_at: new Date().toISOString(),
+                    },
+                    { onConflict: "instagram_comment_id" }
+                  );
+                console.log(`[Webhook] Comment ${commentId} synchronized to instagram_comments.`);
+              } catch (commDbErr) {
+                console.warn("[Webhook] Non-blocking error saving to instagram_comments:", commDbErr);
+              }
+            }
+
+            // 3. Duplicate Check: Verify if this comment was already processed (Idempotency)
             const { data: existingEvent } = await supabaseAdmin
               .from("instagram_webhook_events")
               .select("id, processed, payload")
@@ -204,6 +230,19 @@ Deno.serve(async (req: Request) => {
 
             if (existingEvent && existingEvent.processed) {
               console.log(`[Webhook] Duplicate event detected. Comment ${commentId} already processed. Skipping to avoid duplicate DM.`);
+              continue;
+            }
+
+            // Also check auto_dm_logs for comment deduplication
+            const { data: existingLog } = await supabaseAdmin
+              .from("auto_dm_logs")
+              .select("id, status")
+              .eq("comment_id", commentId)
+              .eq("status", "sent")
+              .maybeSingle();
+
+            if (existingLog) {
+              console.log(`[Webhook] Duplicate check: Comment ${commentId} already has sent log in auto_dm_logs. Skipping to avoid duplicate DM.`);
               continue;
             }
 
@@ -244,7 +283,7 @@ Deno.serve(async (req: Request) => {
               }
             }
 
-            // 3. Validate Token
+            // 4. Validate Token
             if (!tokenToUse) {
               console.warn(`[Webhook] No valid access token found for account @${account?.instagram_username || igAccountId}.`);
               if (eventRecordId) {
@@ -270,24 +309,42 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 4. Fetch Automation Configurations for this Account
-            let automationsQuery = supabaseAdmin
-              .from("instagram_automations")
-              .select("id, user_id, instagram_account_id, instagram_post_id, keyword, dm_message, is_active")
-              .eq("is_active", true);
+            // 5. Fetch Automation Configurations for this Account (check auto_dm_rules and fallback to instagram_automations)
+            let rules: any[] = [];
 
             if (account?.id) {
-              automationsQuery = automationsQuery.eq("instagram_account_id", account.id);
+              // Try auto_dm_rules first
+              const { data: rulesData } = await supabaseAdmin
+                .from("auto_dm_rules")
+                .select("id, user_id, instagram_account_id, post_id, keyword, message, is_active")
+                .eq("instagram_account_id", account.id)
+                .eq("is_active", true);
+
+              if (rulesData && rulesData.length > 0) {
+                rules = rulesData.map((r: any) => ({
+                  id: r.id,
+                  user_id: r.user_id,
+                  instagram_account_id: r.instagram_account_id,
+                  instagram_post_id: r.post_id,
+                  keyword: r.keyword,
+                  dm_message: r.message,
+                  is_active: r.is_active,
+                }));
+              } else {
+                // Fallback to instagram_automations
+                const { data: autoData } = await supabaseAdmin
+                  .from("instagram_automations")
+                  .select("id, user_id, instagram_account_id, instagram_post_id, keyword, dm_message, is_active")
+                  .eq("instagram_account_id", account.id)
+                  .eq("is_active", true);
+
+                if (autoData) {
+                  rules = autoData;
+                }
+              }
             }
 
-            const { data: automations, error: autoError } = await automationsQuery;
-
-            if (autoError) {
-              console.error("[Webhook] Error fetching automations from Supabase:", autoError);
-              continue;
-            }
-
-            if (!automations || automations.length === 0) {
+            if (!rules || rules.length === 0) {
               console.log(`[Webhook] No active automations found for account ${account?.instagram_username || igAccountId}.`);
               if (eventRecordId) {
                 await supabaseAdmin
@@ -311,14 +368,14 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 5. Post-Specific Priority Matching
+            // 6. Post-Specific Priority Matching
             // Find post-specific rule first, then fallback to 'all_posts' rule
-            let targetAutomation = automations.find(
+            let targetAutomation = rules.find(
               (a) => String(a.instagram_post_id).trim() === postId,
             );
 
             if (!targetAutomation) {
-              targetAutomation = automations.find(
+              targetAutomation = rules.find(
                 (a) => String(a.instagram_post_id).trim() === "all_posts",
               );
             }
@@ -348,7 +405,7 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 6. Predictable Keyword Matching
+            // 7. Predictable Keyword Matching
             const { matched, matchedKeyword } = matchCommentKeywords(
               rawCommentText,
               targetAutomation.keyword,
@@ -380,7 +437,7 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 7. Send Automatic DM to Commenter via Meta Instagram Messaging API
+            // 8. Send Automatic DM to Commenter via Meta Instagram Messaging API
             console.log(`[Webhook] Match SUCCESS! Keyword "${matchedKeyword}" found in comment. Sending Auto DM to @${commenterUsername}...`);
 
             const dmText = targetAutomation.dm_message;
@@ -388,6 +445,7 @@ Deno.serve(async (req: Request) => {
             let metaResponseStatus = "failed";
             let metaResponseData: any = null;
             let metaErrorMessage: string | null = null;
+            let providerMessageId: string | null = null;
 
             // Strategy: Use official Private Reply endpoint with comment_id (works within 7-day comment window)
             // Fallback to IGSID recipient if comment_id is unavailable
@@ -417,6 +475,7 @@ Deno.serve(async (req: Request) => {
 
               if (dmResponse.ok && (metaResponseData?.message_id || metaResponseData?.recipient_id)) {
                 metaResponseStatus = "sent";
+                providerMessageId = metaResponseData?.message_id || null;
                 console.log(`[Webhook] Direct Message sent successfully to @${commenterUsername}! Message ID:`, metaResponseData?.message_id);
               } else {
                 // If comment_id failed and commenterId exists, attempt fallback with recipient id
@@ -441,6 +500,7 @@ Deno.serve(async (req: Request) => {
                   if (fallbackResponse.ok && (fallbackData?.message_id || fallbackData?.recipient_id)) {
                     metaResponseStatus = "sent";
                     metaResponseData = fallbackData;
+                    providerMessageId = fallbackData?.message_id || null;
                     console.log(`[Webhook] Fallback Direct Message sent successfully! Message ID:`, fallbackData?.message_id);
                   } else {
                     metaResponseStatus = "failed";
@@ -460,7 +520,26 @@ Deno.serve(async (req: Request) => {
               console.error(`[Webhook] Network Exception sending DM:`, dmErr);
             }
 
-            // 8. Store Final Result in Database for Live UI Status
+            // 9. Store in auto_dm_logs
+            try {
+              await supabaseAdmin
+                .from("auto_dm_logs")
+                .insert({
+                  user_id: account?.user_id || targetAutomation.user_id,
+                  post_id: postId,
+                  comment_id: commentId,
+                  instagram_user_id: commenterId || null,
+                  rule_id: targetAutomation.id && targetAutomation.id.length === 36 ? targetAutomation.id : null,
+                  message: dmText,
+                  status: metaResponseStatus,
+                  provider_message_id: providerMessageId,
+                  error_message: metaErrorMessage,
+                });
+            } catch (logErr) {
+              console.warn("[Webhook] Error writing to auto_dm_logs:", logErr);
+            }
+
+            // 10. Store Final Result in instagram_webhook_events for Live UI Status
             if (eventRecordId) {
               await supabaseAdmin
                 .from("instagram_webhook_events")
