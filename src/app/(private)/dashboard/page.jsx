@@ -117,6 +117,20 @@ function Page() {
     // Strip trailing #_ fragment if present
     const cleanCode = code.replace(/#_$/, "");
 
+    try {
+      const msgUint8 = new TextEncoder().encode(cleanCode);
+      const hashBuffer = await crypto.subtle.digest("SHA-256", msgUint8);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const codeFingerprint = hashArray
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("")
+        .substring(0, 12);
+      console.log(
+        "[dashboard] OAuth callback captured code fingerprint:",
+        codeFingerprint,
+      );
+    } catch (_) {}
+
     setConnecting(true);
     toast.info("Connecting your Instagram account with Meta...");
 

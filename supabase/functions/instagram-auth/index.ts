@@ -113,14 +113,6 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      console.log(
-        "[instagram-auth] OAuth configuration:",
-        {
-          client_id: metaAppId,
-          redirect_uri: INSTAGRAM_REDIRECT_URI,
-        },
-      );
-
       const authUrl =
         `https://www.instagram.com/oauth/authorize` +
         `?enable_fb_login=0` +
@@ -132,9 +124,18 @@ Deno.serve(async (req: Request) => {
           "instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments",
         )}`;
 
-      console.log(
-        "[instagram-auth] Instagram OAuth URL generated.",
-      );
+      console.log("[instagram-auth] Generated OAuth configuration:", {
+        authorization_endpoint: "https://www.instagram.com/oauth/authorize",
+        client_id: metaAppId,
+        redirect_uri: INSTAGRAM_REDIRECT_URI,
+        response_type: "code",
+        scope: [
+          "instagram_business_basic",
+          "instagram_business_manage_messages",
+          "instagram_business_manage_comments",
+        ],
+        auth_url: authUrl,
+      });
 
       return new Response(
         JSON.stringify({
@@ -195,14 +196,22 @@ Deno.serve(async (req: Request) => {
       .trim()
       .replace(/#_$/, "");
 
+    // Safe SHA-256 fingerprint of the authorization code (never logging actual code)
+    const hashBuffer = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(cleanCode),
+    );
+    const codeFingerprint = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .substring(0, 12);
+
     console.log(
       `[instagram-auth] Starting Instagram OAuth token exchange for user ${user.id}`,
     );
 
-    // IMPORTANT:
-    // Never log the actual authorization code or secret.
-
-    console.log("[instagram-auth] Token exchange configuration:", {
+    console.log("[instagram-auth] Token exchange request received:", {
+      authorization_code_fingerprint: codeFingerprint,
       client_id: metaAppId,
       redirect_uri: INSTAGRAM_REDIRECT_URI,
       grant_type: "authorization_code",
@@ -252,6 +261,7 @@ Deno.serve(async (req: Request) => {
       console.error(
         "[instagram-auth] Meta short-lived token exchange failed:",
         {
+          authorization_code_fingerprint: codeFingerprint,
           http_status: shortLivedRes.status,
           response: shortLivedData,
           redirect_uri_used: INSTAGRAM_REDIRECT_URI,
