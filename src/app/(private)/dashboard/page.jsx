@@ -15,7 +15,7 @@ function Page() {
   const [selectedComment, setSelectedComment] = useState(0);
   const [keyword, setKeyword] = useState("price, buy, info");
   const [dmMessage, setDmMessage] = useState(
-    "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details."
+    "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details.",
   );
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -121,13 +121,14 @@ function Page() {
     toast.info("Connecting your Instagram account with Meta...");
 
     try {
-      const redirectUri = "https://auto-dm-beta.vercel.app/dashboard";
-      const { data, error } = await supabase.functions.invoke("instagram-auth", {
-        body: {
-          code: cleanCode,
-          redirect_uri: redirectUri,
+      const { data, error } = await supabase.functions.invoke(
+        "instagram-auth",
+        {
+          body: {
+            code: cleanCode,
+          },
         },
-      });
+      );
 
       if (error) {
         let msg = error.message;
@@ -149,7 +150,9 @@ function Page() {
       if (data?.account) {
         setConnected(true);
         setAccountData(data.account);
-        toast.success(`Instagram account @${data.account.instagram_username} connected successfully!`);
+        toast.success(
+          `Instagram account @${data.account.instagram_username} connected successfully!`,
+        );
         fetchRecentEvents(data.account.id);
       }
     } catch (err) {
@@ -163,7 +166,11 @@ function Page() {
   const handleConnectClick = async () => {
     if (connected && accountData?.id) {
       // Allow disconnect
-      if (window.confirm("Are you sure you want to disconnect your Instagram account?")) {
+      if (
+        window.confirm(
+          "Are you sure you want to disconnect your Instagram account?",
+        )
+      ) {
         const { error } = await supabase
           .from("instagram_accounts")
           .delete()
@@ -194,13 +201,14 @@ function Page() {
         return;
       }
 
-    const redirectUri = "https://auto-dm-beta.vercel.app/dashboard";
-      const { data, error } = await supabase.functions.invoke("instagram-auth", {
-        body: {
-          action: "get_auth_url",
-          redirect_uri: redirectUri,
+      const { data, error } = await supabase.functions.invoke(
+        "instagram-auth",
+        {
+          body: {
+            action: "get_auth_url",
+          },
         },
-      });
+      );
 
       if (error) {
         let msg = error.message;
@@ -213,7 +221,7 @@ function Page() {
 
         if (msg.includes("not found") || error.status === 404) {
           toast.error(
-            "The 'instagram-auth' Edge Function is not deployed in Supabase yet. Please deploy it first."
+            "The 'instagram-auth' Edge Function is not deployed in Supabase yet. Please deploy it first.",
           );
         } else {
           toast.error(msg);
@@ -302,7 +310,7 @@ function Page() {
         setCurrentAutomationId(null);
         setKeyword("price, buy, info");
         setDmMessage(
-          "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details."
+          "Hey! 👋 Thanks for commenting on our post. We'd love to help you. Check your DM for more details.",
         );
         setEnabled(true);
       }
@@ -411,8 +419,8 @@ function Page() {
               {connecting
                 ? "Connecting..."
                 : connected
-                ? "✓ Instagram Connected"
-                : "Connect Instagram"}
+                  ? "✓ Instagram Connected"
+                  : "Connect Instagram"}
             </button>
           </div>
         </div>
@@ -783,7 +791,8 @@ function Page() {
                         const resultStatus =
                           evt.payload?.processing_result?.status ||
                           (evt.processed ? "Sent" : "Pending");
-                        const isSent = resultStatus === "sent" || resultStatus === "Sent";
+                        const isSent =
+                          resultStatus === "sent" || resultStatus === "Sent";
 
                         return (
                           <div

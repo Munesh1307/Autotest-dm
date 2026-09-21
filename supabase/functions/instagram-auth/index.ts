@@ -31,7 +31,8 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("META_APP_ID") ||
       "";
 
-    const metaAppSecret = Deno.env.get("META_APP_SECRET") || "";
+    const metaAppSecret =
+  Deno.env.get("META_INSTAGRAM_APP_SECRET") || "";
 
     // --------------------------------------------------
     // 1. Authenticate Supabase user
@@ -181,7 +182,7 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({
           success: false,
           error:
-            "Server configuration error: META_INSTAGRAM_APP_ID or META_APP_SECRET is not configured in Supabase Secrets.",
+            "Server configuration error: META_INSTAGRAM_APP_ID or META_INSTAGRAM_APP_SECRET is not configured in Supabase Secrets.",
         }),
         {
           status: 500,
