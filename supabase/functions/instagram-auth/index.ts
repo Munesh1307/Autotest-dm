@@ -571,6 +571,36 @@ Deno.serve(async (req: Request) => {
         }
       } catch (_) {}
 
+      // Also merge any comments saved directly in instagram_comments table
+      try {
+        const { data: dbComments } = await supabaseAdmin
+          .from("instagram_comments")
+          .select("instagram_comment_id, instagram_username, comment_text, commented_at, instagram_user_id, like_count")
+          .eq("post_id", String(postId))
+          .order("commented_at", { ascending: false })
+          .limit(50);
+
+        if (dbComments && dbComments.length > 0) {
+          const existingIds = new Set(normalizedList.map((c: any) => c.id));
+
+          for (const dbc of dbComments) {
+            if (dbc.instagram_comment_id && !existingIds.has(String(dbc.instagram_comment_id))) {
+              normalizedList.unshift({
+                id: String(dbc.instagram_comment_id),
+                text: String(dbc.comment_text || ""),
+                timestamp: dbc.commented_at || new Date().toISOString(),
+                username: dbc.instagram_username || "instagram_user",
+                userId: dbc.instagram_user_id || null,
+                like_count: dbc.like_count ?? 0,
+                from: { username: dbc.instagram_username || "instagram_user" },
+                replies: null,
+              });
+              existingIds.add(String(dbc.instagram_comment_id));
+            }
+          }
+        }
+      } catch (_) {}
+
       // Try caching to instagram_comments if table exists
       if (normalizedList.length > 0 && igAccount?.id) {
         try {
