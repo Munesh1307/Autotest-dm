@@ -542,11 +542,11 @@ Deno.serve(async (req: Request) => {
           let subReplies =
             c.replies?.data && Array.isArray(c.replies.data)
               ? c.replies.data.map((r: any) => ({
-                  id: String(r.id || ""),
-                  text: String(r.text || ""),
-                  timestamp: r.timestamp || null,
-                  username: r.username || r.from?.username || r.user?.username || "instagram_user",
-                }))
+                id: String(r.id || ""),
+                text: String(r.text || ""),
+                timestamp: r.timestamp || null,
+                username: r.username || r.from?.username || r.user?.username || "instagram_user",
+              }))
               : [];
 
           // If no replies nested in response, check replies endpoint
@@ -569,7 +569,7 @@ Deno.serve(async (req: Request) => {
                   }));
                 }
               }
-            } catch (_) {}
+            } catch (_) { }
           }
 
           return {
@@ -585,6 +585,35 @@ Deno.serve(async (req: Request) => {
         }),
       );
 
+      // Resolve postUuid from instagram_posts table for database foreign key
+      let postUuid: string | null = null;
+      try {
+        const { data: postRow } = await supabaseAdmin
+          .from("instagram_posts")
+          .select("id")
+          .eq("instagram_post_id", String(postId))
+          .maybeSingle();
+
+        if (postRow?.id) {
+          postUuid = postRow.id;
+        } else if (igAccount?.id) {
+          const { data: newPostRow } = await supabaseAdmin
+            .from("instagram_posts")
+            .upsert(
+              {
+                user_id: user.id,
+                instagram_account_id: igAccount.id,
+                instagram_post_id: String(postId),
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "instagram_post_id" },
+            )
+            .select("id")
+            .maybeSingle();
+          postUuid = newPostRow?.id || null;
+        }
+      } catch (_) {}
+
       // Also merge any comments received via webhook saved in instagram_webhook_events
       try {
         const { data: webhookEvents } = await supabaseAdmin
@@ -595,7 +624,7 @@ Deno.serve(async (req: Request) => {
           .limit(50);
 
         if (webhookEvents && webhookEvents.length > 0) {
-          const existingIds = new Set(normalizedList.map((c: any) => c.id));
+          const existingIds = new Set(normalizedList.map((c: any) => String(c.id)));
 
           for (const ev of webhookEvents) {
             const p = ev.payload;
@@ -616,49 +645,52 @@ Deno.serve(async (req: Request) => {
         }
       } catch (_) {}
 
-      // Also merge any comments saved directly in instagram_comments table
-      try {
-        const { data: dbComments } = await supabaseAdmin
-          .from("instagram_comments")
-          .select("instagram_comment_id, instagram_username, comment_text, commented_at, instagram_user_id, like_count")
-          .eq("post_id", String(postId))
-          .order("commented_at", { ascending: false })
-          .limit(50);
+      // Also merge any comments saved directly in instagram_comments table matching exact schema
+      if (postUuid) {
+        try {
+          const { data: dbComments } = await supabaseAdmin
+            .from("instagram_comments")
+            .select("id, user_id, instagram_account_id, instagram_post_id, instagram_comment_id, instagram_user_id, instagram_username, comment_text, parent_comment_id, commented_at, created_at, updated_at")
+            .eq("instagram_post_id", postUuid)
+            .order("commented_at", { ascending: false })
+            .limit(50);
 
-        if (dbComments && dbComments.length > 0) {
-          const existingIds = new Set(normalizedList.map((c: any) => c.id));
+          if (dbComments && dbComments.length > 0) {
+            const existingIds = new Set(normalizedList.map((c: any) => String(c.id)));
 
-          for (const dbc of dbComments) {
-            if (dbc.instagram_comment_id && !existingIds.has(String(dbc.instagram_comment_id))) {
-              normalizedList.unshift({
-                id: String(dbc.instagram_comment_id),
-                text: String(dbc.comment_text || ""),
-                timestamp: dbc.commented_at || new Date().toISOString(),
-                username: dbc.instagram_username || "instagram_user",
-                userId: dbc.instagram_user_id || null,
-                like_count: dbc.like_count ?? 0,
-                from: { username: dbc.instagram_username || "instagram_user" },
-                replies: null,
-              });
-              existingIds.add(String(dbc.instagram_comment_id));
+            for (const dbc of dbComments) {
+              if (dbc.instagram_comment_id && !existingIds.has(String(dbc.instagram_comment_id))) {
+                normalizedList.unshift({
+                  id: String(dbc.instagram_comment_id),
+                  text: String(dbc.comment_text || ""),
+                  timestamp: dbc.commented_at || dbc.created_at || new Date().toISOString(),
+                  username: dbc.instagram_username || "instagram_user",
+                  userId: dbc.instagram_user_id || null,
+                  like_count: 0,
+                  from: { username: dbc.instagram_username || "instagram_user" },
+                  replies: null,
+                });
+                existingIds.add(String(dbc.instagram_comment_id));
+              }
             }
           }
+        } catch (dbReadErr) {
+          console.warn("[instagram-auth] Error reading from instagram_comments:", dbReadErr);
         }
-      } catch (_) {}
+      }
 
-      // Try caching to instagram_comments if table exists
-      if (normalizedList.length > 0 && igAccount?.id) {
+      // Synchronize/cache normalizedList into instagram_comments table matching exact schema
+      if (normalizedList.length > 0 && igAccount?.id && postUuid) {
         try {
           const commentRows = normalizedList.map((c: any) => ({
             user_id: user.id,
             instagram_account_id: igAccount.id,
-            post_id: String(postId),
-            instagram_comment_id: c.id,
-            instagram_user_id: c.userId ? String(c.userId) : null,
-            instagram_username: c.username,
-            comment_text: c.text,
+            instagram_post_id: postUuid,
+            instagram_comment_id: String(c.id),
+            instagram_user_id: String(c.userId || c.from?.id || "instagram_user"),
+            instagram_username: String(c.username || "instagram_user"),
+            comment_text: String(c.text || ""),
             parent_comment_id: null,
-            like_count: c.like_count ?? 0,
             commented_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }));
@@ -668,7 +700,9 @@ Deno.serve(async (req: Request) => {
             .upsert(commentRows, {
               onConflict: "instagram_comment_id",
             });
-        } catch (_) {}
+        } catch (dbSaveErr) {
+          console.warn("[instagram-auth] Error saving to instagram_comments:", dbSaveErr);
+        }
       }
 
       return new Response(
@@ -1271,7 +1305,7 @@ Deno.serve(async (req: Request) => {
     const igUsername =
       String(
         profileData.username ||
-          "instagram_user",
+        "instagram_user",
       );
 
     // --------------------------------------------------

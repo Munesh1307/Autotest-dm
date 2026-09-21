@@ -195,27 +195,57 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 2. Synchronize comment to instagram_comments table
+            // 2. Synchronize comment to instagram_comments table matching exact schema
             if (account?.id && account?.user_id) {
               try {
-                await supabaseAdmin
-                  .from("instagram_comments")
-                  .upsert(
-                    {
-                      user_id: account.user_id,
-                      instagram_account_id: account.id,
-                      post_id: postId,
-                      instagram_comment_id: commentId,
-                      instagram_user_id: commenterId || null,
-                      instagram_username: commenterUsername || "instagram_user",
-                      comment_text: rawCommentText,
-                      parent_comment_id: (commentVal as any).parent_id || null,
-                      commented_at: entry.time ? new Date(entry.time * 1000).toISOString() : new Date().toISOString(),
-                      updated_at: new Date().toISOString(),
-                    },
-                    { onConflict: "instagram_comment_id" }
-                  );
-                console.log(`[Webhook] Comment ${commentId} synchronized to instagram_comments.`);
+                let postUuid: string | null = null;
+                if (postId) {
+                  const { data: postRow } = await supabaseAdmin
+                    .from("instagram_posts")
+                    .select("id")
+                    .eq("instagram_post_id", postId)
+                    .maybeSingle();
+
+                  if (postRow?.id) {
+                    postUuid = postRow.id;
+                  } else {
+                    const { data: newPostRow } = await supabaseAdmin
+                      .from("instagram_posts")
+                      .upsert(
+                        {
+                          user_id: account.user_id,
+                          instagram_account_id: account.id,
+                          instagram_post_id: postId,
+                          updated_at: new Date().toISOString(),
+                        },
+                        { onConflict: "instagram_post_id" },
+                      )
+                      .select("id")
+                      .maybeSingle();
+                    postUuid = newPostRow?.id || null;
+                  }
+                }
+
+                if (postUuid) {
+                  await supabaseAdmin
+                    .from("instagram_comments")
+                    .upsert(
+                      {
+                        user_id: account.user_id,
+                        instagram_account_id: account.id,
+                        instagram_post_id: postUuid,
+                        instagram_comment_id: commentId,
+                        instagram_user_id: commenterId || "unknown",
+                        instagram_username: commenterUsername || "instagram_user",
+                        comment_text: rawCommentText,
+                        parent_comment_id: (commentVal as any).parent_id || null,
+                        commented_at: entry.time ? new Date(entry.time * 1000).toISOString() : new Date().toISOString(),
+                        updated_at: new Date().toISOString(),
+                      },
+                      { onConflict: "instagram_comment_id" }
+                    );
+                  console.log(`[Webhook] Comment ${commentId} synchronized to instagram_comments.`);
+                }
               } catch (commDbErr) {
                 console.warn("[Webhook] Non-blocking error saving to instagram_comments:", commDbErr);
               }
