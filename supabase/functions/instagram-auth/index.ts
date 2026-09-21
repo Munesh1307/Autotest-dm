@@ -7,12 +7,6 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
 };
 
-// IMPORTANT:
-// Keep ONE exact redirect URI for the complete Instagram OAuth flow.
-// Do not add a trailing slash.
-const INSTAGRAM_REDIRECT_URI =
-  "https://auto-dm-beta.vercel.app/dashboard";
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", {
@@ -26,13 +20,15 @@ Deno.serve(async (req: Request) => {
     const supabaseServiceKey =
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
+    const INSTAGRAM_REDIRECT_URI =
+      Deno.env.get("INSTAGRAM_REDIRECT_URI") ||
+      "https://auto-dm-beta.vercel.app/dashboard";
+
     const metaAppId =
-      Deno.env.get("META_INSTAGRAM_APP_ID") ||
-      Deno.env.get("META_APP_ID") ||
-      "";
+      Deno.env.get("META_INSTAGRAM_APP_ID") || "";
 
     const metaAppSecret =
-  Deno.env.get("META_INSTAGRAM_APP_SECRET") || "";
+      Deno.env.get("META_INSTAGRAM_APP_SECRET") || "";
 
     // --------------------------------------------------
     // 1. Authenticate Supabase user
@@ -105,7 +101,7 @@ Deno.serve(async (req: Request) => {
           JSON.stringify({
             success: false,
             error:
-              "Missing META_INSTAGRAM_APP_ID or META_APP_ID in Supabase Secrets.",
+              "Missing META_INSTAGRAM_APP_ID in Supabase Secrets.",
           }),
           {
             status: 400,
