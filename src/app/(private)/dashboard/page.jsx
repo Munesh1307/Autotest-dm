@@ -16,7 +16,7 @@ function Page() {
 
   // Real Instagram Posts State
   const [posts, setPosts] = useState([]);
-  const [selectedPost, setSelectedPost] = useState(0);
+  const [selectedPostId, setSelectedPostId] = useState(null);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [postsError, setPostsError] = useState(null);
   const [postsPaging, setPostsPaging] = useState(null);
@@ -24,7 +24,7 @@ function Page() {
 
   // Real Instagram Comments State
   const [comments, setComments] = useState([]);
-  const [selectedComment, setSelectedComment] = useState(0);
+  const [selectedCommentId, setSelectedCommentId] = useState(null);
   const [loadingComments, setLoadingComments] = useState(false);
   const [commentsError, setCommentsError] = useState(null);
 
@@ -46,9 +46,9 @@ function Page() {
   const [recentEvents, setRecentEvents] = useState([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
 
-  // Active Post & Comment
-  const currentPost = posts && posts.length > 0 ? posts[selectedPost] || posts[0] : null;
-  const currentComment = comments && comments.length > 0 ? comments[selectedComment] || comments[0] : null;
+  // Active Post & Comment (precisely determined by ID)
+  const currentPost = posts.find((p) => String(p.id) === String(selectedPostId)) || (posts.length > 0 ? posts[0] : null);
+  const currentComment = comments.find((c) => String(c.id) === String(selectedCommentId)) || (comments.length > 0 ? comments[0] : null);
 
   // Initial mount: fetch connected account and handle OAuth callback
   useEffect(() => {
@@ -264,8 +264,11 @@ function Page() {
       if (after) {
         setPosts((prev) => [...prev, ...(fetchedPosts || [])]);
       } else {
-        setPosts(fetchedPosts || []);
-        setSelectedPost(0);
+        const postList = fetchedPosts || [];
+        setPosts(postList);
+        if (postList.length > 0) {
+          setSelectedPostId((prev) => (prev && postList.some((p) => String(p.id) === String(prev)) ? prev : postList[0].id));
+        }
       }
       setPostsPaging(paging);
     } catch (err) {
@@ -300,8 +303,11 @@ function Page() {
         setCommentsError(error);
         setComments([]);
       } else {
-        setComments(fetchedComments || []);
-        setSelectedComment(0);
+        const commList = fetchedComments || [];
+        setComments(commList);
+        if (commList.length > 0) {
+          setSelectedCommentId(commList[0].id);
+        }
       }
     } catch (err) {
       console.error("Error fetching comments:", err);
@@ -698,19 +704,21 @@ function Page() {
                   {!loadingPosts && !postsError && posts.length > 0 && (
                     <>
                       <div className="grid grid-cols-3 gap-3">
-                        {posts.map((post, index) => {
+                        {posts.map((post) => {
                           const imageUrl = getMediaImageUrl(post);
                           const isVideo = post.media_type === "VIDEO";
                           const isCarousel = post.media_type === "CAROUSEL_ALBUM";
                           const commentCount = post.comments_count ?? 0;
+                          const isSelected = String(post.id) === String(currentPost?.id);
 
                           return (
                             <button
                               key={post.id}
-                              onClick={() => setSelectedPost(index)}
-                              className={`group relative overflow-hidden rounded-lg border-2 text-left ${
-                                selectedPost === index
-                                    ? "border-black"
+                              type="button"
+                              onClick={() => setSelectedPostId(post.id)}
+                              className={`group relative overflow-hidden rounded-lg border-2 text-left transition ${
+                                isSelected
+                                  ? "border-black ring-2 ring-black ring-offset-2"
                                   : "border-transparent hover:border-gray-300"
                               }`}
                             >
@@ -740,8 +748,8 @@ function Page() {
                                 {commentCount} comments
                               </div>
 
-                              {selectedPost === index && (
-                                <div className="absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-black text-xs text-white">
+                              {isSelected && (
+                                <div className="absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-black text-xs font-bold text-white shadow">
                                   ✓
                                 </div>
                               )}
@@ -874,22 +882,23 @@ function Page() {
                   {/* Comments List */}
                   {!loadingComments && !commentsError && comments.length > 0 && (
                     <div className="space-y-3">
-                      {comments.map((comment, index) => {
+                      {comments.map((comment) => {
                         const commenterUsername = comment.username || "instagram_user";
                         const initial = commenterUsername.charAt(0).toUpperCase() || "U";
                         const isReplying = replyingCommentId === comment.id;
+                        const isSelected = String(comment.id) === String(currentComment?.id);
 
                         return (
                           <div
                             key={comment.id}
                             className={`rounded-lg border p-3 transition ${
-                              selectedComment === index
-                                ? "border-black bg-gray-50/70"
+                              isSelected
+                                ? "border-black bg-gray-50/70 shadow-sm"
                                 : "border-gray-100 hover:border-gray-300"
                             }`}
                           >
                             <div
-                              onClick={() => setSelectedComment(index)}
+                              onClick={() => setSelectedCommentId(comment.id)}
                               className="flex cursor-pointer items-start gap-3 text-left"
                             >
                               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold text-gray-700">
@@ -914,7 +923,7 @@ function Page() {
 
                               <div
                                 className={`mt-1 h-4 w-4 shrink-0 rounded-full border ${
-                                  selectedComment === index
+                                  isSelected
                                     ? "border-black bg-black"
                                     : "border-gray-300"
                                 }`}
