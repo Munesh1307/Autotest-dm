@@ -450,19 +450,37 @@ Deno.serve(async (req: Request) => {
         // Attempt 1: Standard full fields with replies
         `https://graph.instagram.com/v21.0/${encodeURIComponent(
           String(postId),
-        )}/comments?fields=id,text,timestamp,username,like_count,from,replies{id,text,timestamp,username}&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+        )}/comments?fields=id,text,timestamp,username,like_count,replies{id,text,timestamp,username}&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
           igAccount.access_token,
         )}`,
-        // Attempt 2: Standard fields with from
-        `https://graph.instagram.com/v21.0/${encodeURIComponent(
-          String(postId),
-        )}/comments?fields=id,text,timestamp,username,like_count,from&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
-          igAccount.access_token,
-        )}`,
-        // Attempt 3: Core minimal fields (100% supported by all Instagram Graph API endpoints)
+        // Attempt 2: Core fields (id, text, timestamp, username, like_count)
         `https://graph.instagram.com/v21.0/${encodeURIComponent(
           String(postId),
         )}/comments?fields=id,text,timestamp,username,like_count&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`,
+        // Attempt 3: Fundamental fields (id, text, timestamp, username)
+        `https://graph.instagram.com/v21.0/${encodeURIComponent(
+          String(postId),
+        )}/comments?fields=id,text,timestamp,username&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`,
+        // Attempt 4: Facebook graph fallback
+        `https://graph.facebook.com/v21.0/${encodeURIComponent(
+          String(postId),
+        )}/comments?fields=id,text,timestamp,username&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`,
+        // Attempt 5: Minimal fields
+        `https://graph.instagram.com/v21.0/${encodeURIComponent(
+          String(postId),
+        )}/comments?fields=id,text,timestamp&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+          igAccount.access_token,
+        )}`,
+        // Attempt 6: Default fields
+        `https://graph.instagram.com/v21.0/${encodeURIComponent(
+          String(postId),
+        )}/comments?limit=${limit}${afterParam}&access_token=${encodeURIComponent(
           igAccount.access_token,
         )}`,
       ];
@@ -510,35 +528,62 @@ Deno.serve(async (req: Request) => {
 
       const rawList = Array.isArray(commentsData?.data) ? commentsData.data : [];
 
-      const normalizedList = rawList.map((c: any) => {
-        const resolvedUsername =
-          c.username ||
-          c.from?.username ||
-          c.user?.username ||
-          c.from?.name ||
-          c.name ||
-          "instagram_user";
+      // Fetch sub-replies for top-level comments if not already included
+      const normalizedList = await Promise.all(
+        rawList.map(async (c: any) => {
+          const resolvedUsername =
+            c.username ||
+            c.from?.username ||
+            c.user?.username ||
+            c.from?.name ||
+            c.name ||
+            "instagram_user";
 
-        const subReplies = c.replies?.data && Array.isArray(c.replies.data)
-          ? c.replies.data.map((r: any) => ({
-              id: String(r.id || ""),
-              text: String(r.text || ""),
-              timestamp: r.timestamp || null,
-              username: r.username || r.from?.username || r.user?.username || "instagram_user",
-            }))
-          : [];
+          let subReplies =
+            c.replies?.data && Array.isArray(c.replies.data)
+              ? c.replies.data.map((r: any) => ({
+                  id: String(r.id || ""),
+                  text: String(r.text || ""),
+                  timestamp: r.timestamp || null,
+                  username: r.username || r.from?.username || r.user?.username || "instagram_user",
+                }))
+              : [];
 
-        return {
-          id: String(c.id || ""),
-          text: String(c.text || ""),
-          timestamp: c.timestamp || null,
-          username: resolvedUsername,
-          userId: c.from?.id || c.user?.id || c.user_id || null,
-          like_count: c.like_count ?? 0,
-          from: c.from || (c.username ? { username: c.username } : null),
-          replies: subReplies.length > 0 ? { data: subReplies } : (c.replies || null),
-        };
-      });
+          // If no replies nested in response, check replies endpoint
+          if (subReplies.length === 0 && c.id) {
+            try {
+              const repUrl = `https://graph.instagram.com/v21.0/${encodeURIComponent(
+                String(c.id),
+              )}/replies?fields=id,text,timestamp,username&access_token=${encodeURIComponent(
+                igAccount.access_token,
+              )}`;
+              const repRes = await fetch(repUrl, { method: "GET" });
+              if (repRes.ok) {
+                const repJson = await repRes.json();
+                if (Array.isArray(repJson.data) && repJson.data.length > 0) {
+                  subReplies = repJson.data.map((r: any) => ({
+                    id: String(r.id || ""),
+                    text: String(r.text || ""),
+                    timestamp: r.timestamp || null,
+                    username: r.username || "instagram_user",
+                  }));
+                }
+              }
+            } catch (_) {}
+          }
+
+          return {
+            id: String(c.id || ""),
+            text: String(c.text || ""),
+            timestamp: c.timestamp || null,
+            username: resolvedUsername,
+            userId: c.from?.id || c.user?.id || c.user_id || null,
+            like_count: c.like_count ?? 0,
+            from: c.from || (c.username ? { username: c.username } : null),
+            replies: subReplies.length > 0 ? { data: subReplies } : null,
+          };
+        }),
+      );
 
       // Also merge any comments received via webhook saved in instagram_webhook_events
       try {
