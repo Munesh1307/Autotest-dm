@@ -250,31 +250,6 @@ export const instagramService = {
   async getPostAutomation(supabase, accountId, postId) {
     const client = supabase || createClient();
 
-    // 1. Try auto_dm_rules first
-    const { data: ruleData, error: ruleErr } = await client
-      .from("auto_dm_rules")
-      .select("*")
-      .eq("instagram_account_id", accountId)
-      .eq("post_id", String(postId))
-      .maybeSingle();
-
-    if (ruleData) {
-      return {
-        data: {
-          id: ruleData.id,
-          instagram_account_id: ruleData.instagram_account_id,
-          instagram_post_id: ruleData.post_id,
-          keyword: ruleData.keyword,
-          dm_message: ruleData.message,
-          is_active: ruleData.is_active,
-          created_at: ruleData.created_at,
-          updated_at: ruleData.updated_at,
-        },
-        error: null,
-      };
-    }
-
-    // 2. Fallback to instagram_automations
     const { data, error } = await client
       .from("instagram_automations")
       .select("*")
@@ -302,24 +277,6 @@ export const instagramService = {
     const cleanKeyword = (keyword || "").trim();
     const cleanDmMessage = (dmMessage || "").trim();
     const cleanPostId = String(postId || "").trim();
-
-    // Also sync to auto_dm_rules
-    try {
-      await client
-        .from("auto_dm_rules")
-        .upsert(
-          {
-            user_id: user.id,
-            instagram_account_id: accountId,
-            post_id: cleanPostId,
-            keyword: cleanKeyword,
-            message: cleanDmMessage,
-            is_active: isActive !== false,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "instagram_account_id,post_id" }
-        );
-    } catch (_) {}
 
     // 1. If automationId is provided, update by ID
     if (automationId) {
@@ -387,33 +344,6 @@ export const instagramService = {
   async getRecentWebhookEvents(supabase, accountId) {
     const client = supabase || createClient();
 
-    // 1. Check auto_dm_logs
-    const { data: logs } = await client
-      .from("auto_dm_logs")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(10);
-
-    if (logs && logs.length > 0) {
-      const mappedLogs = logs.map((l) => ({
-        id: l.id,
-        created_at: l.created_at,
-        processed: true,
-        payload: {
-          comment_id: l.comment_id,
-          post_id: l.post_id,
-          commenter: { username: "commenter" },
-          comment_text: l.message,
-          processing_result: {
-            status: l.status,
-            error_message: l.error_message,
-          },
-        },
-      }));
-      return { data: mappedLogs, error: null };
-    }
-
-    // 2. Fallback to instagram_webhook_events
     const { data, error } = await client
       .from("instagram_webhook_events")
       .select("*")

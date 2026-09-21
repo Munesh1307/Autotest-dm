@@ -309,38 +309,40 @@ Deno.serve(async (req: Request) => {
               continue;
             }
 
-            // 5. Fetch Automation Configurations for this Account (check auto_dm_rules and fallback to instagram_automations)
+            // 5. Fetch Automation Configurations for this Account
             let rules: any[] = [];
 
             if (account?.id) {
-              // Try auto_dm_rules first
-              const { data: rulesData } = await supabaseAdmin
-                .from("auto_dm_rules")
-                .select("id, user_id, instagram_account_id, post_id, keyword, message, is_active")
+              // Priority 1: instagram_automations
+              const { data: autoData } = await supabaseAdmin
+                .from("instagram_automations")
+                .select("id, user_id, instagram_account_id, instagram_post_id, keyword, dm_message, is_active")
                 .eq("instagram_account_id", account.id)
                 .eq("is_active", true);
 
-              if (rulesData && rulesData.length > 0) {
-                rules = rulesData.map((r: any) => ({
-                  id: r.id,
-                  user_id: r.user_id,
-                  instagram_account_id: r.instagram_account_id,
-                  instagram_post_id: r.post_id,
-                  keyword: r.keyword,
-                  dm_message: r.message,
-                  is_active: r.is_active,
-                }));
+              if (autoData && autoData.length > 0) {
+                rules = autoData;
               } else {
-                // Fallback to instagram_automations
-                const { data: autoData } = await supabaseAdmin
-                  .from("instagram_automations")
-                  .select("id, user_id, instagram_account_id, instagram_post_id, keyword, dm_message, is_active")
-                  .eq("instagram_account_id", account.id)
-                  .eq("is_active", true);
+                // Priority 2: auto_dm_rules
+                try {
+                  const { data: rulesData } = await supabaseAdmin
+                    .from("auto_dm_rules")
+                    .select("id, user_id, instagram_account_id, post_id, keyword, message, is_active")
+                    .eq("instagram_account_id", account.id)
+                    .eq("is_active", true);
 
-                if (autoData) {
-                  rules = autoData;
-                }
+                  if (rulesData && rulesData.length > 0) {
+                    rules = rulesData.map((r: any) => ({
+                      id: r.id,
+                      user_id: r.user_id,
+                      instagram_account_id: r.instagram_account_id,
+                      instagram_post_id: r.post_id,
+                      keyword: r.keyword,
+                      dm_message: r.message,
+                      is_active: r.is_active,
+                    }));
+                  }
+                } catch (_) {}
               }
             }
 
