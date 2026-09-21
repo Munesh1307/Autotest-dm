@@ -125,64 +125,6 @@ export const instagramService = {
         },
       });
 
-      let edgeComments = [];
-      if (!error && Array.isArray(data?.data)) {
-        edgeComments = data.data;
-      }
-
-      // Also query directly from Supabase DB to guarantee no comments are missed
-      let dbCommentsList = [];
-      try {
-        const { data: postRow } = await client
-          .from("instagram_posts")
-          .select("id")
-          .eq("instagram_post_id", cleanPostId)
-          .maybeSingle();
-
-        if (postRow?.id) {
-          const { data: dbData } = await client
-            .from("instagram_comments")
-            .select("id, user_id, instagram_account_id, instagram_post_id, instagram_comment_id, instagram_user_id, instagram_username, comment_text, parent_comment_id, commented_at, created_at, updated_at")
-            .eq("instagram_post_id", postRow.id)
-            .order("commented_at", { ascending: false })
-            .limit(limit);
-
-          if (Array.isArray(dbData) && dbData.length > 0) {
-            dbCommentsList = dbData.map((c) => ({
-              id: c.instagram_comment_id || c.id,
-              text: c.comment_text,
-              timestamp: c.commented_at || c.created_at,
-              username: c.instagram_username || "instagram_user",
-              userId: c.instagram_user_id || null,
-              like_count: 0,
-              from: { username: c.instagram_username || "instagram_user" },
-              replies: null,
-            }));
-          }
-        }
-      } catch (dbErr) {
-        console.warn("[instagram.service] Direct DB comments fetch warning:", dbErr);
-      }
-
-      // Merge edge comments and database comments
-      const existingIds = new Set(edgeComments.map((c) => String(c.id)));
-      const combined = [...edgeComments];
-
-      for (const dbc of dbCommentsList) {
-        if (!existingIds.has(String(dbc.id))) {
-          combined.push(dbc);
-          existingIds.add(String(dbc.id));
-        }
-      }
-
-      if (combined.length > 0) {
-        return {
-          comments: combined,
-          paging: data?.paging || null,
-          error: null,
-        };
-      }
-
       if (data?.error) {
         return { comments: [], paging: null, error: data.error, expired: data.expired };
       }
@@ -193,19 +135,21 @@ export const instagramService = {
           try {
             const errBody = await error.context.json();
             msg = errBody.error || errBody.message || msg;
-          } catch (_) { }
+          } catch (_) {}
         }
-        return { comments: [], paging: null, error: msg };
+        return { comments: [], paging: null, error: msg || "Failed to load comments." };
       }
 
+      const commentsList = Array.isArray(data?.data) ? data.data : [];
+
       return {
-        comments: [],
+        comments: commentsList,
         paging: data?.paging || null,
         error: null,
       };
     } catch (err) {
       console.error("[instagram.service] getComments error:", err);
-      return { comments: [], paging: null, error: err?.message || "Failed to fetch comments" };
+      return { comments: [], error: err.message || "Failed to fetch comments" };
     }
   },
 
