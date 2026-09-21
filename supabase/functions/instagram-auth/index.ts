@@ -7,6 +7,12 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
 };
 
+// IMPORTANT:
+// Keep ONE exact redirect URI for the complete Instagram OAuth flow.
+// Do not add a trailing slash.
+const INSTAGRAM_REDIRECT_URI =
+  "https://auto-dm-beta.vercel.app/dashboard";
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", {
@@ -17,7 +23,8 @@ Deno.serve(async (req: Request) => {
 
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const supabaseServiceKey =
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
     const metaAppId =
       Deno.env.get("META_INSTAGRAM_APP_ID") ||
@@ -25,12 +32,6 @@ Deno.serve(async (req: Request) => {
       "";
 
     const metaAppSecret = Deno.env.get("META_APP_SECRET") || "";
-
-    // IMPORTANT:
-    // One single redirect URI is used for the complete OAuth flow.
-    const redirectUri =
-      Deno.env.get("INSTAGRAM_REDIRECT_URI") ||
-      "https://auto-dm-beta.vercel.app/dashboard";
 
     // --------------------------------------------------
     // 1. Authenticate Supabase user
@@ -56,11 +57,15 @@ Deno.serve(async (req: Request) => {
 
     const token = authHeader.replace("Bearer ", "").trim();
 
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        persistSession: false,
+    const supabaseAdmin = createClient(
+      supabaseUrl,
+      supabaseServiceKey,
+      {
+        auth: {
+          persistSession: false,
+        },
       },
-    });
+    );
 
     const {
       data: { user },
@@ -111,20 +116,28 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      console.log("[instagram-auth] OAuth redirect URI:", redirectUri);
+      console.log(
+        "[instagram-auth] OAuth configuration:",
+        {
+          client_id: metaAppId,
+          redirect_uri: INSTAGRAM_REDIRECT_URI,
+        },
+      );
 
       const authUrl =
         `https://www.instagram.com/oauth/authorize` +
         `?enable_fb_login=0` +
         `&force_authentication=1` +
         `&client_id=${encodeURIComponent(metaAppId)}` +
-        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&redirect_uri=${encodeURIComponent(INSTAGRAM_REDIRECT_URI)}` +
         `&response_type=code` +
         `&scope=${encodeURIComponent(
           "instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments",
         )}`;
 
-      console.log("[instagram-auth] GENERATED AUTH URL:", authUrl);
+      console.log(
+        "[instagram-auth] Instagram OAuth URL generated.",
+      );
 
       return new Response(
         JSON.stringify({
@@ -142,7 +155,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // --------------------------------------------------
-    // 4. Exchange Instagram authorization code
+    // 4. Read authorization code
     // --------------------------------------------------
 
     const rawCode = body.code || "";
@@ -180,16 +193,28 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const cleanCode = String(rawCode).replace(/#_$/, "");
+    // Remove Instagram callback fragment if present.
+    const cleanCode = String(rawCode)
+      .trim()
+      .replace(/#_$/, "");
 
     console.log(
-      `[instagram-auth] Exchanging Instagram authorization code for user ${user.id}...`,
+      `[instagram-auth] Starting Instagram OAuth token exchange for user ${user.id}`,
     );
 
-    console.log("redirectUri", redirectUri);
+    // IMPORTANT:
+    // Never log the actual authorization code or secret.
+
+    console.log("[instagram-auth] Token exchange configuration:", {
+      client_id: metaAppId,
+      redirect_uri: INSTAGRAM_REDIRECT_URI,
+      grant_type: "authorization_code",
+      has_client_secret: Boolean(metaAppSecret),
+      has_code: Boolean(cleanCode),
+    });
 
     // --------------------------------------------------
-    // 5. Exchange code for short-lived access token
+    // 5. Exchange authorization code for short-lived token
     // --------------------------------------------------
 
     const tokenForm = new URLSearchParams();
@@ -197,16 +222,11 @@ Deno.serve(async (req: Request) => {
     tokenForm.append("client_id", metaAppId);
     tokenForm.append("client_secret", metaAppSecret);
     tokenForm.append("grant_type", "authorization_code");
-    tokenForm.append("redirect_uri", redirectUri);
+    tokenForm.append(
+      "redirect_uri",
+      INSTAGRAM_REDIRECT_URI,
+    );
     tokenForm.append("code", cleanCode);
-
-    console.log("[instagram-auth] TOKEN EXCHANGE DEBUG:", {
-      client_id: metaAppId,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code",
-      has_client_secret: Boolean(metaAppSecret),
-      has_code: Boolean(cleanCode),
-    });
 
     const shortLivedRes = await fetch(
       "https://api.instagram.com/oauth/access_token",
@@ -219,12 +239,27 @@ Deno.serve(async (req: Request) => {
       },
     );
 
-    const shortLivedData = await shortLivedRes.json();
+    const shortLivedText = await shortLivedRes.text();
+
+    let shortLivedData: any = {};
+
+    try {
+      shortLivedData = JSON.parse(shortLivedText);
+    } catch {
+      shortLivedData = {
+        raw_response: shortLivedText,
+      };
+    }
 
     if (!shortLivedRes.ok || !shortLivedData.access_token) {
       console.error(
-        "[instagram-auth] Short-lived token exchange failed:",
-        shortLivedData,
+        "[instagram-auth] Meta short-lived token exchange failed:",
+        {
+          http_status: shortLivedRes.status,
+          response: shortLivedData,
+          redirect_uri_used: INSTAGRAM_REDIRECT_URI,
+          client_id_used: metaAppId,
+        },
       );
 
       return new Response(
@@ -264,23 +299,36 @@ Deno.serve(async (req: Request) => {
         method: "GET",
       });
 
-      const longLivedData = await longLivedRes.json();
+      const longLivedText = await longLivedRes.text();
+
+      let longLivedData: any = {};
+
+      try {
+        longLivedData = JSON.parse(longLivedText);
+      } catch {
+        longLivedData = {
+          raw_response: longLivedText,
+        };
+      }
 
       if (longLivedRes.ok && longLivedData.access_token) {
         finalAccessToken = longLivedData.access_token;
 
         console.log(
-          "[instagram-auth] Obtained long-lived Instagram access token.",
+          "[instagram-auth] Long-lived Instagram access token obtained.",
         );
       } else {
         console.warn(
           "[instagram-auth] Long-lived token exchange warning:",
-          longLivedData,
+          {
+            http_status: longLivedRes.status,
+            response: longLivedData,
+          },
         );
       }
     } catch (llErr) {
       console.warn(
-        "[instagram-auth] Long-lived exchange request error:",
+        "[instagram-auth] Long-lived token exchange request error:",
         llErr,
       );
     }
@@ -298,18 +346,32 @@ Deno.serve(async (req: Request) => {
       },
     );
 
-    const profileData = await profileRes.json();
+    const profileText = await profileRes.text();
+
+    let profileData: any = {};
+
+    try {
+      profileData = JSON.parse(profileText);
+    } catch {
+      profileData = {
+        raw_response: profileText,
+      };
+    }
 
     if (!profileRes.ok || !profileData.id) {
       console.error(
         "[instagram-auth] Failed to fetch Instagram profile:",
-        profileData,
+        {
+          http_status: profileRes.status,
+          response: profileData,
+        },
       );
 
       return new Response(
         JSON.stringify({
           success: false,
-          error: "Failed to fetch Instagram profile from Meta Graph API.",
+          error:
+            "Failed to fetch Instagram profile from Meta Graph API.",
         }),
         {
           status: 400,
@@ -322,34 +384,40 @@ Deno.serve(async (req: Request) => {
     }
 
     const igUserId = String(profileData.id);
-    const igUsername = String(profileData.username || "instagram_user");
+    const igUsername = String(
+      profileData.username || "instagram_user",
+    );
 
     // --------------------------------------------------
     // 8. Save Instagram account
     // --------------------------------------------------
 
-    const { data: savedAccount, error: dbError } = await supabaseAdmin
-      .from("instagram_accounts")
-      .upsert(
-        {
-          user_id: user.id,
-          instagram_user_id: igUserId,
-          instagram_username: igUsername,
-          access_token: finalAccessToken,
-          status: "active",
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "instagram_user_id",
-        },
-      )
-      .select(
-        "id, user_id, instagram_user_id, instagram_username, status, created_at, updated_at",
-      )
-      .single();
+    const { data: savedAccount, error: dbError } =
+      await supabaseAdmin
+        .from("instagram_accounts")
+        .upsert(
+          {
+            user_id: user.id,
+            instagram_user_id: igUserId,
+            instagram_username: igUsername,
+            access_token: finalAccessToken,
+            status: "active",
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "instagram_user_id",
+          },
+        )
+        .select(
+          "id, user_id, instagram_user_id, instagram_username, status, created_at, updated_at",
+        )
+        .single();
 
     if (dbError) {
-      console.error("[instagram-auth] Database save error:", dbError);
+      console.error(
+        "[instagram-auth] Database save error:",
+        dbError,
+      );
 
       return new Response(
         JSON.stringify({
@@ -368,7 +436,9 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    console.log("[instagram-auth] Instagram account connected successfully.");
+    console.log(
+      "[instagram-auth] Instagram account connected successfully.",
+    );
 
     // --------------------------------------------------
     // 9. Return safe account data
@@ -379,8 +449,10 @@ Deno.serve(async (req: Request) => {
         success: true,
         account: {
           id: savedAccount.id,
-          instagram_user_id: savedAccount.instagram_user_id,
-          instagram_username: savedAccount.instagram_username,
+          instagram_user_id:
+            savedAccount.instagram_user_id,
+          instagram_username:
+            savedAccount.instagram_username,
           status: savedAccount.status,
         },
       }),
@@ -393,12 +465,18 @@ Deno.serve(async (req: Request) => {
       },
     );
   } catch (err) {
-    console.error("[instagram-auth] Top-level handler error:", err);
+    console.error(
+      "[instagram-auth] Top-level handler error:",
+      err,
+    );
 
     return new Response(
       JSON.stringify({
         success: false,
-        error: (err as Error)?.message || "Internal server error",
+        error:
+          err instanceof Error
+            ? err.message
+            : "Internal server error",
       }),
       {
         status: 500,
