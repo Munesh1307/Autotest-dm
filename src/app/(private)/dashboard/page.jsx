@@ -22,6 +22,8 @@ function Page() {
   const [postsPaging, setPostsPaging] = useState(null);
   const [loadingMorePosts, setLoadingMorePosts] = useState(false);
 
+  console.log(posts,"postsposts")
+
   // Real Instagram Comments State
   const [comments, setComments] = useState([]);
   const [selectedCommentId, setSelectedCommentId] = useState(null);
@@ -281,10 +283,14 @@ function Page() {
   };
 
   const fetchCommentsForPost = async (postId) => {
-    if (!postId) return;
+    if (!postId) {
+      setComments([]);
+      return;
+    }
 
     setLoadingComments(true);
     setCommentsError(null);
+    setComments([]);
     setReplyingCommentId(null);
     setReplyText("");
 
@@ -668,7 +674,6 @@ function Page() {
                       {loadingPosts ? "Refreshing..." : "↻ Refresh"}
                     </button>
                   </div>
-
                   {/* Loading Posts State */}
                   {loadingPosts && (
                     <div className="flex flex-col items-center justify-center py-10 text-center">
@@ -689,7 +694,6 @@ function Page() {
                       </button>
                     </div>
                   )}
-
                   {/* Empty State */}
                   {!loadingPosts && !postsError && posts.length === 0 && (
                     <div className="rounded-lg bg-gray-50 p-8 text-center text-sm text-gray-500">
@@ -699,7 +703,6 @@ function Page() {
                       </p>
                     </div>
                   )}
-
                   {/* Posts Grid */}
                   {!loadingPosts && !postsError && posts.length > 0 && (
                     <>
