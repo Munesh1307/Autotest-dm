@@ -107,20 +107,21 @@ export const instagramService = {
   },
 
   /**
-   * Fetch real dynamic comments for a specific Instagram post
+   * Fetch real dynamic comments for a specific Instagram post (max 10 comments)
    */
-  async getComments(supabase, postId, { limit = 50, after = null } = {}) {
+  async getComments(supabase, postId, { limit = 10, after = null } = {}) {
     if (!postId) return { comments: [], error: "Missing post ID" };
 
     const client = supabase || createClient();
     const cleanPostId = String(postId).trim();
+    const safeLimit = Math.min(Number(limit) || 10, 10);
 
     try {
       const { data, error } = await client.functions.invoke("instagram-auth", {
         body: {
           action: "get_comments",
           post_id: cleanPostId,
-          limit,
+          limit: safeLimit,
           after,
         },
       });
@@ -137,10 +138,10 @@ export const instagramService = {
             msg = errBody.error || errBody.message || msg;
           } catch (_) {}
         }
-        return { comments: [], paging: null, error: msg || "Failed to load comments." };
+        return { comments: [], paging: null, error: msg || "Unable to load comments." };
       }
 
-      const commentsList = Array.isArray(data?.data) ? data.data : [];
+      const commentsList = Array.isArray(data?.data) ? data.data.slice(0, 10) : [];
 
       return {
         comments: commentsList,
@@ -149,7 +150,7 @@ export const instagramService = {
       };
     } catch (err) {
       console.error("[instagram.service] getComments error:", err);
-      return { comments: [], error: err.message || "Failed to fetch comments" };
+      return { comments: [], error: "Unable to load comments." };
     }
   },
 

@@ -442,7 +442,7 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      const limit = Number(body.limit) || 50;
+      const limit = Math.min(Number(body.limit) || 10, 10);
       const afterParam = body.after ? `&after=${encodeURIComponent(String(body.after))}` : "";
 
       // Multi-tier URL attempts to prevent field syntax errors on different IG account/media types
@@ -717,7 +717,7 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           success: true,
-          data: normalizedList,
+          data: normalizedList.slice(0, 10),
           paging: commentsData?.paging || null,
         }),
         {

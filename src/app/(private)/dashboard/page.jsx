@@ -88,6 +88,80 @@ function Page() {
     }
   }, [currentPost?.id, accountData?.id, triggerType]);
 
+  // Real-time synchronization for new Instagram comments on the selected post
+  useEffect(() => {
+    if (!currentPost?.id) return;
+
+    const activePostId = String(currentPost.id);
+
+    const channel = supabase
+      .channel(`realtime-comments-${activePostId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "instagram_comments",
+        },
+        (payload) => {
+          const newComm = payload?.new;
+          if (!newComm) return;
+
+          const matchesPost =
+            String(newComm.post_id || "") === activePostId ||
+            String(newComm.instagram_post_id || "") === activePostId;
+
+          if (matchesPost) {
+            const formatted = {
+              id: String(newComm.instagram_comment_id || newComm.id),
+              text: newComm.comment_text || "",
+              timestamp: newComm.commented_at || newComm.created_at || new Date().toISOString(),
+              username: newComm.instagram_username || "instagram_user",
+              like_count: newComm.like_count ?? 0,
+            };
+
+            setComments((prev) => {
+              const filtered = prev.filter((c) => String(c.id) !== String(formatted.id));
+              return [formatted, ...filtered].slice(0, 10);
+            });
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "instagram_webhook_events",
+        },
+        (payload) => {
+          const ev = payload?.new;
+          if (ev?.event_type === "comment" && ev?.payload) {
+            const p = ev.payload;
+            if (String(p.post_id || "") === activePostId) {
+              const formatted = {
+                id: String(p.comment_id || ev.event_id || ev.id),
+                text: p.comment_text || p.text || "",
+                timestamp: p.entry_time ? new Date(p.entry_time * 1000).toISOString() : (ev.created_at || new Date().toISOString()),
+                username: p.commenter?.username || p.from?.username || "instagram_user",
+                like_count: 0,
+              };
+
+              setComments((prev) => {
+                const filtered = prev.filter((c) => String(c.id) !== String(formatted.id));
+                return [formatted, ...filtered].slice(0, 10);
+              });
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentPost?.id]);
+
   // ============================================================================
   // OAuth & Account Connection
   // ============================================================================
@@ -296,7 +370,7 @@ function Page() {
 
     try {
       const { comments: fetchedComments, error, expired } = await instagramService.getComments(supabase, postId, {
-        limit: 50,
+        limit: 10,
       });
 
       if (expired) {
@@ -306,10 +380,10 @@ function Page() {
       }
 
       if (error) {
-        setCommentsError(error);
+        setCommentsError("Unable to load comments.");
         setComments([]);
       } else {
-        const commList = fetchedComments || [];
+        const commList = (fetchedComments || []).slice(0, 10);
         setComments(commList);
         if (commList.length > 0) {
           setSelectedCommentId(commList[0].id);
@@ -317,7 +391,7 @@ function Page() {
       }
     } catch (err) {
       console.error("Error fetching comments:", err);
-      setCommentsError("Failed to fetch comments for this post.");
+      setCommentsError("Unable to load comments.");
       setComments([]);
     } finally {
       setLoadingComments(false);
@@ -818,7 +892,7 @@ function Page() {
                             : currentPost.media_type === "CAROUSEL_ALBUM"
                               ? "Carousel Album"
                               : "Photo"}{" "}
-                          · {currentPost.comments_count ?? comments.length} comments
+                          · {currentPost.comments_count ?? 0} comments
                           {currentPost.like_count !== undefined && ` · ${currentPost.like_count} likes`}
                           {currentPost.timestamp && ` · ${formatTimestamp(currentPost.timestamp)}`}
                         </p>
@@ -832,7 +906,7 @@ function Page() {
                   <div className="mb-4 flex items-center justify-between">
                     <div>
                       <h2 className="font-medium text-gray-900">
-                        Post Comments {comments.length > 0 && `(${comments.length})`}
+                        Post Comments
                       </h2>
                       <p className="mt-1 text-sm text-gray-500">
                         Real-time comments from Instagram users on this post.
@@ -855,14 +929,14 @@ function Page() {
                   {loadingComments && (
                     <div className="flex flex-col items-center justify-center py-8 text-center">
                       <div className="h-5 w-5 animate-spin rounded-full border-2 border-black border-t-transparent mb-2"></div>
-                      <p className="text-xs text-gray-500">Loading comments from Instagram...</p>
+                      <p className="text-xs text-gray-500">Loading comments...</p>
                     </div>
                   )}
 
                   {/* Comments Error */}
                   {!loadingComments && commentsError && (
                     <div className="rounded-lg bg-red-50 p-4 text-center text-xs text-red-600">
-                      <p>{commentsError}</p>
+                      <p>{commentsError || "Unable to load comments."}</p>
                       <button
                         onClick={() => currentPost?.id && fetchCommentsForPost(currentPost.id)}
                         className="mt-1 underline hover:text-red-800"
@@ -875,17 +949,17 @@ function Page() {
                   {/* No Comments State */}
                   {!loadingComments && !commentsError && comments.length === 0 && (
                     <div className="rounded-lg bg-gray-50 p-6 text-center text-xs text-gray-500">
-                      <p className="font-medium text-gray-700">No comments yet on this post.</p>
+                      <p className="font-medium text-gray-700">No comments yet.</p>
                       <p className="mt-1 text-gray-400">
-                        When users comment on this Instagram post or reel, their username and comment will appear here.
+                        When users comment on this post, they will appear here in real time.
                       </p>
                     </div>
                   )}
 
-                  {/* Comments List */}
+                  {/* Comments List (Max 10) */}
                   {!loadingComments && !commentsError && comments.length > 0 && (
                     <div className="space-y-3">
-                      {comments.map((comment) => {
+                      {comments.slice(0, 10).map((comment) => {
                         const commenterUsername = comment.username || "instagram_user";
                         const initial = commenterUsername.charAt(0).toUpperCase() || "U";
                         const isReplying = replyingCommentId === comment.id;
