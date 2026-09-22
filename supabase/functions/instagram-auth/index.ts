@@ -1,4 +1,3 @@
-
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -27,17 +26,13 @@ Deno.serve(async (req: Request) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 
-    const supabaseServiceKey =
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-    const metaAppId =
-      Deno.env.get("META_INSTAGRAM_APP_ID") ?? "";
+    const metaAppId = Deno.env.get("META_INSTAGRAM_APP_ID") ?? "";
 
-    const metaAppSecret =
-      Deno.env.get("META_INSTAGRAM_APP_SECRET") ?? "";
+    const metaAppSecret = Deno.env.get("META_INSTAGRAM_APP_SECRET") ?? "";
 
-    const envRedirectUri =
-      Deno.env.get("INSTAGRAM_REDIRECT_URI") ?? "";
+    const envRedirectUri = Deno.env.get("INSTAGRAM_REDIRECT_URI") ?? "";
 
     // --------------------------------------------------
     // 2. Parse request body
@@ -56,7 +51,7 @@ Deno.serve(async (req: Request) => {
      * 2. Fallback to INSTAGRAM_REDIRECT_URI in Supabase Secrets
      */
     const resolvedRedirectUri =
-      (typeof body.redirect_uri === "string" && body.redirect_uri.trim())
+      typeof body.redirect_uri === "string" && body.redirect_uri.trim()
         ? body.redirect_uri.trim()
         : envRedirectUri.trim();
 
@@ -85,8 +80,7 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error:
-            "Missing META_INSTAGRAM_APP_ID in Supabase Secrets.",
+          error: "Missing META_INSTAGRAM_APP_ID in Supabase Secrets.",
         }),
         {
           status: 500,
@@ -102,8 +96,7 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error:
-            "Missing META_INSTAGRAM_APP_SECRET in Supabase Secrets.",
+          error: "Missing META_INSTAGRAM_APP_SECRET in Supabase Secrets.",
         }),
         {
           status: 500,
@@ -154,9 +147,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const token = authHeader
-      .replace(/^Bearer\s+/i, "")
-      .trim();
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
 
     if (!token) {
       return new Response(
@@ -174,16 +165,12 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const supabaseAdmin = createClient(
-      supabaseUrl,
-      supabaseServiceKey,
-      {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
       },
-    );
+    });
 
     const {
       data: { user },
@@ -199,8 +186,7 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error:
-            "Unauthorized: Invalid or expired user session.",
+          error: "Unauthorized: Invalid or expired user session.",
         }),
         {
           status: 401,
@@ -226,23 +212,17 @@ Deno.serve(async (req: Request) => {
       const authUrl =
         "https://www.instagram.com/oauth/authorize" +
         `?client_id=${encodeURIComponent(metaAppId)}` +
-        `&redirect_uri=${encodeURIComponent(
-          resolvedRedirectUri,
-        )}` +
+        `&redirect_uri=${encodeURIComponent(resolvedRedirectUri)}` +
         `&response_type=code` +
         `&scope=${encodeURIComponent(scopes.join(","))}`;
 
-      console.log(
-        "[instagram-auth] OAuth URL configuration:",
-        {
-          authorization_endpoint:
-            "https://www.instagram.com/oauth/authorize",
-          client_id: metaAppId,
-          redirect_uri: resolvedRedirectUri,
-          response_type: "code",
-          scopes,
-        },
-      );
+      console.log("[instagram-auth] OAuth URL configuration:", {
+        authorization_endpoint: "https://www.instagram.com/oauth/authorize",
+        client_id: metaAppId,
+        redirect_uri: resolvedRedirectUri,
+        response_type: "code",
+        scopes,
+      });
 
       return new Response(
         JSON.stringify({
@@ -267,7 +247,9 @@ Deno.serve(async (req: Request) => {
     if (body.action === "get_media") {
       const { data: igAccount, error: igAccError } = await supabaseAdmin
         .from("instagram_accounts")
-        .select("id, instagram_user_id, instagram_username, access_token, status")
+        .select(
+          "id, instagram_user_id, instagram_username, access_token, status",
+        )
         .eq("user_id", user.id)
         .maybeSingle();
 
@@ -275,7 +257,8 @@ Deno.serve(async (req: Request) => {
         return new Response(
           JSON.stringify({
             success: false,
-            error: "No connected Instagram account found. Please connect your Instagram account first.",
+            error:
+              "No connected Instagram account found. Please connect your Instagram account first.",
             not_connected: true,
           }),
           {
@@ -289,11 +272,12 @@ Deno.serve(async (req: Request) => {
       }
 
       const limit = Number(body.limit) || 24;
-      const afterParam = body.after ? `&after=${encodeURIComponent(String(body.after))}` : "";
-      const mediaUrl =
-        `https://graph.instagram.com/v21.0/me/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
-          igAccount.access_token,
-        )}`;
+      const afterParam = body.after
+        ? `&after=${encodeURIComponent(String(body.after))}`
+        : "";
+      const mediaUrl = `https://graph.instagram.com/v21.0/me/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count&limit=${limit}${afterParam}&access_token=${encodeURIComponent(
+        igAccount.access_token,
+      )}`;
 
       try {
         const mediaRes = await fetch(mediaUrl, { method: "GET" });
@@ -312,7 +296,8 @@ Deno.serve(async (req: Request) => {
             return new Response(
               JSON.stringify({
                 success: false,
-                error: "Instagram session expired. Please reconnect your account.",
+                error:
+                  "Instagram session expired. Please reconnect your account.",
                 expired: true,
               }),
               {
@@ -328,7 +313,9 @@ Deno.serve(async (req: Request) => {
           return new Response(
             JSON.stringify({
               success: false,
-              error: mediaData?.error?.message || "Failed to fetch Instagram posts from Meta API.",
+              error:
+                mediaData?.error?.message ||
+                "Failed to fetch Instagram posts from Meta API.",
             }),
             {
               status: 400,
@@ -341,7 +328,11 @@ Deno.serve(async (req: Request) => {
         }
 
         // Synchronize fetched posts into instagram_posts table
-        if (Array.isArray(mediaData.data) && mediaData.data.length > 0 && igAccount?.id) {
+        if (
+          Array.isArray(mediaData.data) &&
+          mediaData.data.length > 0 &&
+          igAccount?.id
+        ) {
           try {
             const postRows = mediaData.data.map((p: any) => ({
               user_id: user.id,
@@ -354,7 +345,9 @@ Deno.serve(async (req: Request) => {
               permalink: p.permalink || null,
               like_count: p.like_count ?? 0,
               comments_count: p.comments_count ?? 0,
-              posted_at: p.timestamp ? new Date(p.timestamp).toISOString() : null,
+              posted_at: p.timestamp
+                ? new Date(p.timestamp).toISOString()
+                : null,
               updated_at: new Date().toISOString(),
             }));
 
@@ -362,7 +355,10 @@ Deno.serve(async (req: Request) => {
               .from("instagram_posts")
               .upsert(postRows, { onConflict: "instagram_post_id" });
           } catch (dbErr) {
-            console.warn("[instagram-auth] Non-blocking error storing posts in DB:", dbErr);
+            console.warn(
+              "[instagram-auth] Non-blocking error storing posts in DB:",
+              dbErr,
+            );
           }
         }
 
@@ -443,7 +439,9 @@ Deno.serve(async (req: Request) => {
       }
 
       const limit = Math.min(Number(body.limit) || 10, 10);
-      const afterParam = body.after ? `&after=${encodeURIComponent(String(body.after))}` : "";
+      const afterParam = body.after
+        ? `&after=${encodeURIComponent(String(body.after))}`
+        : "";
 
       // Multi-tier URL attempts to prevent field syntax errors on different IG account/media types
       const commentUrls = [
@@ -502,7 +500,11 @@ Deno.serve(async (req: Request) => {
           if (res.ok && Array.isArray(json.data)) {
             commentsData = json;
             break;
-          } else if (res.ok && json.comments && Array.isArray(json.comments.data)) {
+          } else if (
+            res.ok &&
+            json.comments &&
+            Array.isArray(json.comments.data)
+          ) {
             commentsData = json.comments;
             break;
           } else if (json?.error?.code === 190) {
@@ -510,8 +512,13 @@ Deno.serve(async (req: Request) => {
             lastApiError = json.error;
             break;
           } else {
-            lastApiError = json?.error || { message: "Failed to fetch comments" };
-            console.warn(`[instagram-auth] Comment fetch attempt failed for url, trying next fallback:`, json?.error?.message);
+            lastApiError = json?.error || {
+              message: "Failed to fetch comments",
+            };
+            console.warn(
+              `[instagram-auth] Comment fetch attempt failed for url, trying next fallback:`,
+              json?.error?.message,
+            );
           }
         } catch (fetchErr) {
           lastApiError = fetchErr;
@@ -533,9 +540,32 @@ Deno.serve(async (req: Request) => {
             },
           },
         );
+
+        console.error(
+          "[instagram-auth] All Instagram comment API attempts failed:",
+          lastApiError,
+        );
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error:
+              lastApiError?.message ||
+              "Failed to fetch Instagram comments from Meta API.",
+          }),
+          {
+            status: 400,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json",
+            },
+          },
+        );
       }
 
-      const rawList = Array.isArray(commentsData?.data) ? commentsData.data : [];
+      const rawList = Array.isArray(commentsData?.data)
+        ? commentsData.data
+        : [];
 
       // Fetch sub-replies for top-level comments if not already included
       const normalizedList = await Promise.all(
@@ -551,11 +581,15 @@ Deno.serve(async (req: Request) => {
           let subReplies =
             c.replies?.data && Array.isArray(c.replies.data)
               ? c.replies.data.map((r: any) => ({
-                id: String(r.id || ""),
-                text: String(r.text || ""),
-                timestamp: r.timestamp || null,
-                username: r.username || r.from?.username || r.user?.username || "instagram_user",
-              }))
+                  id: String(r.id || ""),
+                  text: String(r.text || ""),
+                  timestamp: r.timestamp || null,
+                  username:
+                    r.username ||
+                    r.from?.username ||
+                    r.user?.username ||
+                    "instagram_user",
+                }))
               : [];
 
           // If no replies nested in response, check replies endpoint
@@ -578,7 +612,7 @@ Deno.serve(async (req: Request) => {
                   }));
                 }
               }
-            } catch (_) { }
+            } catch (_) {}
           }
 
           return {
@@ -633,16 +667,26 @@ Deno.serve(async (req: Request) => {
           .limit(50);
 
         if (webhookEvents && webhookEvents.length > 0) {
-          const existingIds = new Set(normalizedList.map((c: any) => String(c.id)));
+          const existingIds = new Set(
+            normalizedList.map((c: any) => String(c.id)),
+          );
 
           for (const ev of webhookEvents) {
             const p = ev.payload;
-            if (p && String(p.post_id || "") === String(postId) && p.comment_id && !existingIds.has(String(p.comment_id))) {
+            if (
+              p &&
+              String(p.post_id || "") === String(postId) &&
+              p.comment_id &&
+              !existingIds.has(String(p.comment_id))
+            ) {
               normalizedList.unshift({
                 id: String(p.comment_id),
                 text: String(p.comment_text || p.text || ""),
-                timestamp: p.entry_time ? new Date(p.entry_time * 1000).toISOString() : ev.created_at,
-                username: p.commenter?.username || p.from?.username || "instagram_user",
+                timestamp: p.entry_time
+                  ? new Date(p.entry_time * 1000).toISOString()
+                  : ev.created_at,
+                username:
+                  p.commenter?.username || p.from?.username || "instagram_user",
                 userId: p.commenter?.id || p.from?.id || null,
                 like_count: 0,
                 from: { username: p.commenter?.username || "instagram_user" },
@@ -659,24 +703,36 @@ Deno.serve(async (req: Request) => {
         try {
           const { data: dbComments } = await supabaseAdmin
             .from("instagram_comments")
-            .select("id, user_id, instagram_account_id, instagram_post_id, instagram_comment_id, instagram_user_id, instagram_username, comment_text, parent_comment_id, commented_at, created_at, updated_at")
+            .select(
+              "id, user_id, instagram_account_id, instagram_post_id, instagram_comment_id, instagram_user_id, instagram_username, comment_text, parent_comment_id, commented_at, created_at, updated_at",
+            )
             .eq("instagram_post_id", postUuid)
             .order("commented_at", { ascending: false })
             .limit(50);
 
           if (dbComments && dbComments.length > 0) {
-            const existingIds = new Set(normalizedList.map((c: any) => String(c.id)));
+            const existingIds = new Set(
+              normalizedList.map((c: any) => String(c.id)),
+            );
 
             for (const dbc of dbComments) {
-              if (dbc.instagram_comment_id && !existingIds.has(String(dbc.instagram_comment_id))) {
+              if (
+                dbc.instagram_comment_id &&
+                !existingIds.has(String(dbc.instagram_comment_id))
+              ) {
                 normalizedList.unshift({
                   id: String(dbc.instagram_comment_id),
                   text: String(dbc.comment_text || ""),
-                  timestamp: dbc.commented_at || dbc.created_at || new Date().toISOString(),
+                  timestamp:
+                    dbc.commented_at ||
+                    dbc.created_at ||
+                    new Date().toISOString(),
                   username: dbc.instagram_username || "instagram_user",
                   userId: dbc.instagram_user_id || null,
                   like_count: 0,
-                  from: { username: dbc.instagram_username || "instagram_user" },
+                  from: {
+                    username: dbc.instagram_username || "instagram_user",
+                  },
                   replies: null,
                 });
                 existingIds.add(String(dbc.instagram_comment_id));
@@ -684,7 +740,10 @@ Deno.serve(async (req: Request) => {
             }
           }
         } catch (dbReadErr) {
-          console.warn("[instagram-auth] Error reading from instagram_comments:", dbReadErr);
+          console.warn(
+            "[instagram-auth] Error reading from instagram_comments:",
+            dbReadErr,
+          );
         }
       }
 
@@ -696,21 +755,26 @@ Deno.serve(async (req: Request) => {
             instagram_account_id: igAccount.id,
             instagram_post_id: postUuid,
             instagram_comment_id: String(c.id),
-            instagram_user_id: String(c.userId || c.from?.id || "instagram_user"),
+            instagram_user_id: String(
+              c.userId || c.from?.id || "instagram_user",
+            ),
             instagram_username: String(c.username || "instagram_user"),
             comment_text: String(c.text || ""),
             parent_comment_id: null,
-            commented_at: c.timestamp ? new Date(c.timestamp).toISOString() : new Date().toISOString(),
+            commented_at: c.timestamp
+              ? new Date(c.timestamp).toISOString()
+              : new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }));
 
-          await supabaseAdmin
-            .from("instagram_comments")
-            .upsert(commentRows, {
-              onConflict: "instagram_comment_id",
-            });
+          await supabaseAdmin.from("instagram_comments").upsert(commentRows, {
+            onConflict: "instagram_comment_id",
+          });
         } catch (dbSaveErr) {
-          console.warn("[instagram-auth] Error saving to instagram_comments:", dbSaveErr);
+          console.warn(
+            "[instagram-auth] Error saving to instagram_comments:",
+            dbSaveErr,
+          );
         }
       }
 
@@ -795,7 +859,8 @@ Deno.serve(async (req: Request) => {
         return new Response(
           JSON.stringify({
             success: false,
-            error: replyData?.error?.message || "Failed to post reply on Instagram.",
+            error:
+              replyData?.error?.message || "Failed to post reply on Instagram.",
           }),
           {
             status: 400,
@@ -879,7 +944,9 @@ Deno.serve(async (req: Request) => {
         return new Response(
           JSON.stringify({
             success: false,
-            error: delData?.error?.message || "Failed to delete comment on Instagram.",
+            error:
+              delData?.error?.message ||
+              "Failed to delete comment on Instagram.",
           }),
           {
             status: 400,
@@ -964,7 +1031,9 @@ Deno.serve(async (req: Request) => {
         return new Response(
           JSON.stringify({
             success: false,
-            error: hideData?.error?.message || "Failed to update comment visibility.",
+            error:
+              hideData?.error?.message ||
+              "Failed to update comment visibility.",
           }),
           {
             status: 400,
@@ -980,7 +1049,9 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({
           success: true,
           hidden: hide,
-          message: hide ? "Comment hidden successfully." : "Comment unhidden successfully.",
+          message: hide
+            ? "Comment hidden successfully."
+            : "Comment unhidden successfully.",
         }),
         {
           status: 200,
@@ -996,17 +1067,13 @@ Deno.serve(async (req: Request) => {
     // 10. Read authorization code (OAuth Token Exchange)
     // --------------------------------------------------
 
-    const rawCode =
-      typeof body.code === "string"
-        ? body.code.trim()
-        : "";
+    const rawCode = typeof body.code === "string" ? body.code.trim() : "";
 
     if (!rawCode) {
       return new Response(
         JSON.stringify({
           success: false,
-          error:
-            "Missing authorization code or action.",
+          error: "Missing authorization code or action.",
         }),
         {
           status: 400,
@@ -1033,12 +1100,8 @@ Deno.serve(async (req: Request) => {
       new TextEncoder().encode(cleanCode),
     );
 
-    const codeFingerprint = Array.from(
-      new Uint8Array(hashBuffer),
-    )
-      .map((byte) =>
-        byte.toString(16).padStart(2, "0"),
-      )
+    const codeFingerprint = Array.from(new Uint8Array(hashBuffer))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("")
       .substring(0, 12);
 
@@ -1046,18 +1109,14 @@ Deno.serve(async (req: Request) => {
       `[instagram-auth] Starting OAuth token exchange for user ${user.id}`,
     );
 
-    console.log(
-      "[instagram-auth] OAuth exchange configuration:",
-      {
-        authorization_code_fingerprint:
-          codeFingerprint,
-        client_id: metaAppId,
-        redirect_uri: resolvedRedirectUri,
-        grant_type: "authorization_code",
-        has_client_secret: Boolean(metaAppSecret),
-        has_code: Boolean(cleanCode),
-      },
-    );
+    console.log("[instagram-auth] OAuth exchange configuration:", {
+      authorization_code_fingerprint: codeFingerprint,
+      client_id: metaAppId,
+      redirect_uri: resolvedRedirectUri,
+      grant_type: "authorization_code",
+      has_client_secret: Boolean(metaAppSecret),
+      has_code: Boolean(cleanCode),
+    });
 
     // --------------------------------------------------
     // 7. Exchange authorization code for short-lived token
@@ -1065,20 +1124,11 @@ Deno.serve(async (req: Request) => {
 
     const tokenForm = new URLSearchParams();
 
-    tokenForm.append(
-      "client_id",
-      metaAppId,
-    );
+    tokenForm.append("client_id", metaAppId);
 
-    tokenForm.append(
-      "client_secret",
-      metaAppSecret,
-    );
+    tokenForm.append("client_secret", metaAppSecret);
 
-    tokenForm.append(
-      "grant_type",
-      "authorization_code",
-    );
+    tokenForm.append("grant_type", "authorization_code");
 
     /*
      * VERY IMPORTANT:
@@ -1086,76 +1136,51 @@ Deno.serve(async (req: Request) => {
      * This MUST exactly match the redirect_uri
      * used in Step 4.
      */
-    tokenForm.append(
-      "redirect_uri",
-      resolvedRedirectUri,
-    );
+    tokenForm.append("redirect_uri", resolvedRedirectUri);
 
-    tokenForm.append(
-      "code",
-      cleanCode,
-    );
+    tokenForm.append("code", cleanCode);
 
-    console.log(
-      "[instagram-auth] Token exchange fields:",
-      {
-        client_id: metaAppId,
-        grant_type: "authorization_code",
-        redirect_uri: resolvedRedirectUri,
-        has_code: Boolean(cleanCode),
-        has_client_secret: Boolean(metaAppSecret),
-      },
-    );
+    console.log("[instagram-auth] Token exchange fields:", {
+      client_id: metaAppId,
+      grant_type: "authorization_code",
+      redirect_uri: resolvedRedirectUri,
+      has_code: Boolean(cleanCode),
+      has_client_secret: Boolean(metaAppSecret),
+    });
 
     const shortLivedRes = await fetch(
       "https://api.instagram.com/oauth/access_token",
       {
         method: "POST",
         headers: {
-          "Content-Type":
-            "application/x-www-form-urlencoded",
+          "Content-Type": "application/x-www-form-urlencoded",
         },
         body: tokenForm.toString(),
       },
     );
 
-    const shortLivedText =
-      await shortLivedRes.text();
+    const shortLivedText = await shortLivedRes.text();
 
     let shortLivedData: any = {};
 
     try {
-      shortLivedData =
-        JSON.parse(shortLivedText);
+      shortLivedData = JSON.parse(shortLivedText);
     } catch {
       shortLivedData = {
         raw_response: shortLivedText,
       };
     }
 
-    if (
-      !shortLivedRes.ok ||
-      !shortLivedData.access_token
-    ) {
-      console.error(
-        "[instagram-auth] Short-lived token exchange failed:",
-        {
-          http_status: shortLivedRes.status,
-          response: shortLivedData,
-          fbtrace_id:
-            shortLivedData?.fbtrace_id ??
-            "not_present",
-          error_type:
-            shortLivedData?.error_type ??
-            "unknown",
-          error_code:
-            shortLivedData?.code ??
-            "unknown",
-          redirect_uri_used:
-            resolvedRedirectUri,
-          client_id_used: metaAppId,
-        },
-      );
+    if (!shortLivedRes.ok || !shortLivedData.access_token) {
+      console.error("[instagram-auth] Short-lived token exchange failed:", {
+        http_status: shortLivedRes.status,
+        response: shortLivedData,
+        fbtrace_id: shortLivedData?.fbtrace_id ?? "not_present",
+        error_type: shortLivedData?.error_type ?? "unknown",
+        error_code: shortLivedData?.code ?? "unknown",
+        redirect_uri_used: resolvedRedirectUri,
+        client_id_used: metaAppId,
+      });
 
       return new Response(
         JSON.stringify({
@@ -1175,11 +1200,9 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const shortLivedToken =
-      shortLivedData.access_token;
+    const shortLivedToken = shortLivedData.access_token;
 
-    let finalAccessToken =
-      shortLivedToken;
+    let finalAccessToken = shortLivedToken;
 
     // --------------------------------------------------
     // 9. Exchange short-lived token for long-lived token
@@ -1189,51 +1212,36 @@ Deno.serve(async (req: Request) => {
       const longLivedUrl =
         "https://graph.instagram.com/access_token" +
         "?grant_type=ig_exchange_token" +
-        `&client_secret=${encodeURIComponent(
-          metaAppSecret,
-        )}` +
-        `&access_token=${encodeURIComponent(
-          shortLivedToken,
-        )}`;
+        `&client_secret=${encodeURIComponent(metaAppSecret)}` +
+        `&access_token=${encodeURIComponent(shortLivedToken)}`;
 
-      const longLivedRes =
-        await fetch(longLivedUrl, {
-          method: "GET",
-        });
+      const longLivedRes = await fetch(longLivedUrl, {
+        method: "GET",
+      });
 
-      const longLivedText =
-        await longLivedRes.text();
+      const longLivedText = await longLivedRes.text();
 
       let longLivedData: any = {};
 
       try {
-        longLivedData =
-          JSON.parse(longLivedText);
+        longLivedData = JSON.parse(longLivedText);
       } catch {
         longLivedData = {
           raw_response: longLivedText,
         };
       }
 
-      if (
-        longLivedRes.ok &&
-        longLivedData.access_token
-      ) {
-        finalAccessToken =
-          longLivedData.access_token;
+      if (longLivedRes.ok && longLivedData.access_token) {
+        finalAccessToken = longLivedData.access_token;
 
         console.log(
           "[instagram-auth] Long-lived Instagram access token obtained.",
         );
       } else {
-        console.warn(
-          "[instagram-auth] Long-lived token exchange failed:",
-          {
-            http_status:
-              longLivedRes.status,
-            response: longLivedData,
-          },
-        );
+        console.warn("[instagram-auth] Long-lived token exchange failed:", {
+          http_status: longLivedRes.status,
+          response: longLivedData,
+        });
 
         /*
          * We keep the short-lived token as a fallback.
@@ -1255,41 +1263,29 @@ Deno.serve(async (req: Request) => {
     const profileUrl =
       "https://graph.instagram.com/v21.0/me" +
       "?fields=id,username,account_type" +
-      `&access_token=${encodeURIComponent(
-        finalAccessToken,
-      )}`;
+      `&access_token=${encodeURIComponent(finalAccessToken)}`;
 
-    const profileRes =
-      await fetch(profileUrl, {
-        method: "GET",
-      });
+    const profileRes = await fetch(profileUrl, {
+      method: "GET",
+    });
 
-    const profileText =
-      await profileRes.text();
+    const profileText = await profileRes.text();
 
     let profileData: any = {};
 
     try {
-      profileData =
-        JSON.parse(profileText);
+      profileData = JSON.parse(profileText);
     } catch {
       profileData = {
         raw_response: profileText,
       };
     }
 
-    if (
-      !profileRes.ok ||
-      !profileData.id
-    ) {
-      console.error(
-        "[instagram-auth] Failed to fetch Instagram profile:",
-        {
-          http_status:
-            profileRes.status,
-          response: profileData,
-        },
-      );
+    if (!profileRes.ok || !profileData.id) {
+      console.error("[instagram-auth] Failed to fetch Instagram profile:", {
+        http_status: profileRes.status,
+        response: profileData,
+      });
 
       return new Response(
         JSON.stringify({
@@ -1308,40 +1304,27 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const igUserId =
-      String(profileData.id);
+    const igUserId = String(profileData.id);
 
-    const igUsername =
-      String(
-        profileData.username ||
-        "instagram_user",
-      );
+    const igUsername = String(profileData.username || "instagram_user");
 
     // --------------------------------------------------
     // 11. Save Instagram account
     // --------------------------------------------------
 
-    const {
-      data: savedAccount,
-      error: dbError,
-    } = await supabaseAdmin
+    const { data: savedAccount, error: dbError } = await supabaseAdmin
       .from("instagram_accounts")
       .upsert(
         {
           user_id: user.id,
-          instagram_user_id:
-            igUserId,
-          instagram_username:
-            igUsername,
-          access_token:
-            finalAccessToken,
+          instagram_user_id: igUserId,
+          instagram_username: igUsername,
+          access_token: finalAccessToken,
           status: "active",
-          updated_at:
-            new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         },
         {
-          onConflict:
-            "instagram_user_id",
+          onConflict: "instagram_user_id",
         },
       )
       .select(
@@ -1358,10 +1341,7 @@ Deno.serve(async (req: Request) => {
       .single();
 
     if (dbError) {
-      console.error(
-        "[instagram-auth] Database save error:",
-        dbError,
-      );
+      console.error("[instagram-auth] Database save error:", dbError);
 
       return new Response(
         JSON.stringify({
@@ -1374,8 +1354,7 @@ Deno.serve(async (req: Request) => {
           status: 500,
           headers: {
             ...corsHeaders,
-            "Content-Type":
-              "application/json",
+            "Content-Type": "application/json",
           },
         },
       );
@@ -1385,16 +1364,11 @@ Deno.serve(async (req: Request) => {
     // 12. Success response
     // --------------------------------------------------
 
-    console.log(
-      "[instagram-auth] Instagram account connected successfully.",
-      {
-        user_id: user.id,
-        instagram_user_id:
-          igUserId,
-        instagram_username:
-          igUsername,
-      },
-    );
+    console.log("[instagram-auth] Instagram account connected successfully.", {
+      user_id: user.id,
+      instagram_user_id: igUserId,
+      instagram_username: igUsername,
+    });
 
     /*
      * NEVER return access_token to frontend.
@@ -1404,20 +1378,16 @@ Deno.serve(async (req: Request) => {
         success: true,
         account: {
           id: savedAccount.id,
-          instagram_user_id:
-            savedAccount.instagram_user_id,
-          instagram_username:
-            savedAccount.instagram_username,
-          status:
-            savedAccount.status,
+          instagram_user_id: savedAccount.instagram_user_id,
+          instagram_username: savedAccount.instagram_username,
+          status: savedAccount.status,
         },
       }),
       {
         status: 200,
         headers: {
           ...corsHeaders,
-          "Content-Type":
-            "application/json",
+          "Content-Type": "application/json",
         },
       },
     );
@@ -1426,28 +1396,20 @@ Deno.serve(async (req: Request) => {
     // 13. Global error handler
     // --------------------------------------------------
 
-    console.error(
-      "[instagram-auth] Top-level handler error:",
-      err,
-    );
+    console.error("[instagram-auth] Top-level handler error:", err);
 
     return new Response(
       JSON.stringify({
         success: false,
-        error:
-          err instanceof Error
-            ? err.message
-            : "Internal server error.",
+        error: err instanceof Error ? err.message : "Internal server error.",
       }),
       {
         status: 500,
         headers: {
           ...corsHeaders,
-          "Content-Type":
-            "application/json",
+          "Content-Type": "application/json",
         },
       },
     );
   }
 });
-
